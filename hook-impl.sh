@@ -1,5 +1,5 @@
 #!/bin/bash
-# claude-agent-menubar :: status hook (implementation; launched by hook.sh)
+# claude-sessions-menubar :: status hook (implementation; launched by hook.sh)
 #
 # Invoked by Claude Code for SessionStart, UserPromptSubmit, PreToolUse, Stop,
 # Notification, SubagentStart, SubagentStop and SessionEnd.
@@ -8,7 +8,10 @@
 #
 # Two things are tracked independently and combined into the displayed state:
 #   main   -> what the top-level agent loop is doing (idle/working/done/needs_input),
-#             moved ONLY by events from the main context (no agent_id in payload)
+#             moved ONLY by events from the main context (no agent_id in payload).
+#             needs_input comes from a permission/elicitation Notification, or
+#             from a main-context PreToolUse of AskUserQuestion / ExitPlanMode
+#             (those dialogs fire no Notification).
 #   agents -> the set of live subagents keyed by agent_id (SubagentStart adds,
 #             SubagentStop removes, any event carrying an agent_id self-heals)
 # state = needs_input > subagents (any live agent) > main. The old single state
@@ -115,6 +118,14 @@ printf '%s' "$payload" | "$JQ" -c \
   # only a real dialog counts as "waiting on you"; idle_prompt after Stop just
   # means the session is sitting at "done", and informational types are noise
   | (($ntype | IN("permission_prompt","elicitation_dialog")) | not) as $quiet
+  # AskUserQuestion and ExitPlanMode open a dialog that fires no Notification,
+  # so the main-context PreToolUse for them is the only signal that the
+  # session is waiting on a person.
+  | (if $ev == "PreToolUse" and ($sub_ctx | not)
+     then ({"AskUserQuestion": "ask_user_question", "ExitPlanMode": "plan_approval"}[$p.tool_name // ""] // "")
+     else "" end) as $ask
+  | ({"ask_user_question": "Claude asked you a question",
+      "plan_approval": "Claude is waiting for you to approve a plan"}[$ask] // "") as $ask_msg
   # ---- main-loop state machine ------------------------------------------
   # Events that carry an agent_id come from inside a subagent and must not
   # move the main loop. Stop is only ever emitted for the main agent
@@ -122,7 +133,12 @@ printf '%s' "$payload" | "$JQ" -c \
   | (if   $ev == "SessionStart"                                then "idle"
      elif $ev == "UserPromptSubmit"                            then "working"
      elif $ev == "PreToolUse" then
-            (if $sub_ctx then (if $pm == "needs_input" then "done" else $pm end)
+            (if $sub_ctx then
+               # a subagent resuming means its own prompt was answered, but it
+               # says nothing about a question the main loop is still asking
+               (if $pm == "needs_input" and ($o.notification_type | IN("ask_user_question","plan_approval") | not)
+                then "done" else $pm end)
+             elif $ask != "" then "needs_input"
              else "working" end)
      elif $ev == "Stop"                                        then "done"
      elif $ev == "Notification" then (if $quiet then $pm else "needs_input" end)
@@ -171,6 +187,8 @@ printf '%s' "$payload" | "$JQ" -c \
     }
   | if $ev == "Notification" and ($quiet | not)
     then . + {message: ($p.message // ""), notification_type: $ntype}
+    elif $ask != ""
+    then . + {message: $ask_msg, notification_type: $ask}
     else . end
   # a stale prompt string outliving the prompt is worse than none
   | if .state != "needs_input" then del(.message, .notification_type) else . end

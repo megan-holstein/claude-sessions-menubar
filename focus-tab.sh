@@ -1,5 +1,5 @@
 #!/bin/bash
-# claude-agent-menubar :: focus the terminal tab attached to a given tty
+# claude-sessions-menubar :: focus the terminal tab attached to a given tty
 #
 # Usage: focus-tab.sh ttys004 [terminal]      (or /dev/ttys004)
 #
@@ -33,13 +33,13 @@ notify_not_found() {
   echo "$msg" >&2
   # SwiftBar runs actions with terminal=false, so stderr is invisible --
   # surface it where the user will actually see it.
-  osascript -e "display notification \"$msg\" with title \"Claude Agents\"" >/dev/null 2>&1
+  osascript -e "display notification \"$msg\" with title \"Claude Sessions\"" >/dev/null 2>&1
 }
 
 notify_failure() {
   local rc="$1" out="$2"
   echo "osascript failed (rc=$rc): $out" >&2
-  osascript -e "display notification \"Could not talk to the terminal app. Grant Automation permission in System Settings > Privacy & Security > Automation.\" with title \"Claude Agents\"" >/dev/null 2>&1
+  osascript -e "display notification \"Could not talk to the terminal app. Grant Automation permission in System Settings > Privacy & Security > Automation.\" with title \"Claude Sessions\"" >/dev/null 2>&1
 }
 
 case "$term" in

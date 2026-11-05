@@ -1,45 +1,59 @@
-# claude-agent-menubar
+# claude-sessions-menubar
+
+This is a fork of [thekasmira/claude-agent-menubar](https://github.com/thekasmira/claude-agent-menubar), changed so that the marks say what you have to do next instead of what the agent is doing.
 
 A macOS menu bar indicator for every Claude Code session running on your
 Mac. It shows what each session is doing right now, and clicking one
 focuses its terminal tab.
 
 ```
-🔵1 🔴1                          <- menu bar
-├── 🔴 my-api             needs_input  3m
+🔴1 🟢2 🔄2 ⏳1                    <- menu bar
+├── 🔴 my-api             needs your answer  3m
 │     ~/dev/my-api
 │     tty /dev/ttys001 · pid 62324
 │     Claude needs your permission to run: git push origin test
 │     up 1h30m · last event: Notification
-├── 🔵 Refactor auth middleware  2 subagents  48s
+├── 🟢 claude-sessions-menubar  finished  2m
+├── 🟢 website            finished  14m
+├── 🔄 Refactor auth middleware  working · 2 subagents  48s
 │     ~/dev/website
 │     main loop: working
 │     general-purpose · up 5m · last seen 35s ago
 │     subagent · up 20m · last seen 16m ago (quiet?)
-└── ✅ agent-menubar      done         2h02m
+├── 🔄 billing            working  1m
+└── ⏳ release            waiting on 1 subagent, 1 background task  9m
 ```
 
 ## The five marks
 
-| Mark | Meaning |
-|---|---|
-| 🟢 | **working** — Claude is actively doing something |
-| 🔵 | **subagents running** — one or more subagents are live; the main loop may be waiting on them or working alongside, and the submenu lists each one |
-| ✅ | **done / waiting on you** — Claude finished and there's nothing blocking it |
-| 🔴 | **needs input** — a real permission prompt or question dialog is blocking the session |
-| ⚪ | **idle** — session opened, nothing asked of it yet |
+The marks describe what *you* have to do, loudest first. The menu bar shows one count per mark present, in this order, and the dropdown is one flat list in the same order, oldest first within a mark.
 
-✅ now means the main loop finished *and* no subagent is still live — previously
-a session flipped to ✅ the moment the orchestrator ended its turn even while
-background subagents kept running, which read as "done" when it wasn't.
+| Mark | Text | Meaning |
+|---|---|---|
+| 🔴 | needs your answer | **Act now.** A permission prompt, a question dialog or a plan approval is blocking the session. |
+| 🟢 | finished | **Your turn.** The main loop finished, no subagent is live and no background task is running. |
+| 🔄 | working | The main loop is working. With live subagents the text reads `working · N subagents`. |
+| ⏳ | waiting on … | The main loop finished, but subagents or background tasks are still running: `waiting on 2 subagents`, `waiting on 1 background task` or `waiting on 1 subagent, 2 background tasks`. |
+| ⚪ | new, nothing asked yet | The session opened and has not received a prompt. |
+
+With no sessions the title reads `Claude: none`. The dropdown ends with a grey legend of the five marks.
+
+The plugin derives the mark from the record the hook writes (`main`, `subagents`) plus a count of background tasks, in one pure function (`classify` in the plugin). 🟢 means finished, not healthy: green is the cue to go and look.
+
+### Question dialogs
+
+`AskUserQuestion` and `ExitPlanMode` open a dialog that fires no `Notification`, so a session blocked on one used to show as working. The hook now treats a main-context `PreToolUse` for either tool as `needs_input` and records the message `Claude asked you a question` or `Claude is waiting for you to approve a plan`. The next main-context `PreToolUse`, `UserPromptSubmit` or `Stop` moves the session on and clears the message. A subagent's tool calls do not clear a question the main loop is still asking.
+
+### Background tasks
+
+Claude Code's Bash tool runs each command as a direct child of the `claude` process, with a command line that contains `/.claude/shell-snapshots/snapshot-`. A `run_in_background` task or a Monitor watcher keeps such a child alive after the turn ends. On each refresh the plugin makes one `/bin/ps -Ao ppid=,args=` call and counts those children per `claude` pid. The count changes the mark only when `main` is `done` or `idle`, because a foreground Bash call is normal while the main loop works. If the `ps` call fails, the count is 0.
 
 ## Install
 
 1. Get the code:
    ```bash
-   git clone https://github.com/thekasmira/claude-agent-menubar.git agent-menubar
-   # or: unzip claude-agent-menubar.zip
-   cd agent-menubar
+   git clone https://github.com/megan-holstein/claude-sessions-menubar.git claude-sessions-menubar
+   cd claude-sessions-menubar
    ```
 2. Run the installer:
    ```bash
@@ -51,7 +65,7 @@ background subagents kept running, which read as "done" when it wasn't.
 * check you're on macOS with Homebrew installed
 * install SwiftBar (`brew install --cask swiftbar`) if it isn't already
 * check for `jq` and install it via Homebrew if missing
-* copy this folder to `~/.claude/agent-menubar/` (its permanent home — skipped
+* copy this folder to `~/.claude/claude-sessions-menubar/` (its permanent home — skipped
   if you're already running it from there, or if it detects hooks already
   registered elsewhere on this machine)
 * point SwiftBar at the bundled plugin — either by setting SwiftBar's plugin
@@ -70,7 +84,7 @@ so most sessions pick the hooks up on their next event without a restart).
 ### Automation permission
 
 The **first** time you click a session in the menu, macOS will show an
-"agent-menubar wants to control Terminal" (or iTerm) prompt. Approve it —
+"claude-sessions-menubar wants to control Terminal" (or iTerm) prompt. Approve it —
 that permission is what lets `focus-tab.sh` find and raise the right tab.
 You'll see this prompt once per terminal app.
 
@@ -92,7 +106,7 @@ This removes the hook entries from `~/.claude/settings.json` (backing it up
 first), removes the plugin file/symlink from SwiftBar's plugin directory, and
 deletes `~/.claude/agent-status/`. It leaves SwiftBar itself installed and
 prints the commands to remove it too, and leaves the installed folder
-(`~/.claude/agent-menubar/`) in place for you to delete by hand.
+(`~/.claude/claude-sessions-menubar/`) in place for you to delete by hand.
 
 ## How it works
 
@@ -119,8 +133,8 @@ Four pieces, no daemon and no database:
    is useless: stdin is a pipe.) Every event is also appended to
    `~/.claude/agent-status/events.log` (rotated at 512 KB) as a debugging aid
    — set `CLAUDE_AGENT_STATUS_LOG=0` to disable it.
-3. **`plugins/claude-agents.5s.sh`** — a SwiftBar plugin that re-reads those
-   records every 5 seconds and renders the menu.
+3. **`plugins/claude-sessions.5s.py`** — a SwiftBar plugin that re-reads those
+   records every 5 seconds, derives each session's mark and renders the menu.
 4. **`focus-tab.sh <tty> [terminal]`** — AppleScript that walks the hosting
    terminal app's windows and tabs, finds the tab whose `tty` matches, selects
    it, and raises the window. Dispatches to a Terminal.app or iTerm2 script
@@ -151,7 +165,7 @@ from the main context (payloads without an `agent_id`):
 | `idle` | `SessionStart` | Session opened, nothing asked of it yet |
 | `working` | `UserPromptSubmit`, `PreToolUse` (main context) | Claude is actively doing something |
 | `done` | `Stop` | The main loop ended its turn |
-| `needs_input` | `Notification` | Permission prompt / elicitation dialog — **you are blocking it** |
+| `needs_input` | `Notification`, or a main-context `PreToolUse` of `AskUserQuestion` / `ExitPlanMode` | Permission prompt, elicitation dialog, question or plan approval — **you are blocking it** |
 | *(deleted)* | `SessionEnd` | Record removed |
 
 **`agents`** — the set of live subagents, keyed by `agent_id`. `SubagentStart`
@@ -161,11 +175,7 @@ also emits `SubagentStop` for its internal helper agents, with an empty
 carrying an `agent_id` self-heals a missing entry and refreshes its `seen`
 timestamp; an entry silent for an hour is pruned as a missed stop.
 
-Displayed `state` = `needs_input` if `main` is `needs_input` → else
-`subagents` (🔵) if any agent is live → else `main`. So ✅ means "main loop
-finished **and** nothing is running underneath" — `Stop` fires the instant the
-orchestrator ends its turn, even with background agents still going, which is
-why the old single state machine flipped to ✅ too early.
+Stored `state` = `needs_input` if `main` is `needs_input` → else `subagents` if any agent is live → else `main`. The plugin does not draw `state` directly: it derives the mark from `main`, the subagent count and the background-task count (see "The five marks"). `Stop` fires the instant the orchestrator ends its turn, even with background agents still going, which is why 🟢 requires both a finished main loop and nothing running underneath.
 
 Two details worth knowing:
 
@@ -184,7 +194,7 @@ Two details worth knowing:
 {
   "session_id": "6781f9fd-…", "pid": 57421, "tty": "ttys004",
   "terminal": "Apple_Terminal",
-  "cwd": "/Users/you/dev/agent-menubar", "project": "agent-menubar",
+  "cwd": "/Users/you/dev/claude-sessions-menubar", "project": "claude-sessions-menubar",
   "state": "subagents", "main": "done", "state_since": 1788813153,
   "last_event": "PreToolUse (general-purpose)",
   "started_at": 1788813153, "updated_at": 1788813180,
@@ -206,7 +216,7 @@ is `needs_input`.
 * **Click a session** → focuses its tab (Terminal.app / iTerm2 only, see above).
 * **Submenu** (hover a session) → cwd, tty/pid, the main loop's own state and
   one line per live subagent (type, uptime, last seen — `(quiet?)` after 15 min
-  of silence) when 🔵, the pending prompt text when blocked, uptime and last event.
+  of silence), the background-task count, the pending prompt text when 🔴, uptime and last event.
 * **Open status folder** → opens `~/.claude/agent-status`.
 * **Clear stale** → forces a prune of dead and unparseable records.
 
@@ -221,10 +231,8 @@ is `needs_input`.
   terminal-agnostic) but clicking them reports that no matching tab was
   found. tmux is the awkward case: the tty recorded is the pane's, which
   neither app has ever heard of.
-* **🔴 `needs_input` only means a real dialog.** Only `permission_prompt` and
-  `elicitation_dialog` notifications turn a session red. `idle_prompt` (Claude
-  finished and you haven't typed for a while) leaves it at ✅ `done`, so under
-  `--dangerously-skip-permissions` you will rarely see red at all.
+* **🔴 `needs_input` only means a real dialog.** Only `permission_prompt` and `elicitation_dialog` notifications, and the `AskUserQuestion` and `ExitPlanMode` tools, turn a session red. `idle_prompt` (Claude finished and you haven't typed for a while) leaves it at 🟢 finished, so under `--dangerously-skip-permissions` you will rarely see red except for questions and plan approvals.
+* **Background tasks are inferred from the process table.** A Bash-tool child that outlives the turn counts as a background task, whatever it does. A hook cannot see these tasks, so the plugin counts them itself on each refresh.
 * **Subagent counts can drift.** Parallel subagents finishing at the same
   instant can race on the read-modify-write of one record and lose a decrement.
   The counter is clamped at zero and resets on the next `SessionStart`; it's a
@@ -244,15 +252,15 @@ A self-contained regression test — no installed hooks or real Claude Code
 session required. It points `CLAUDE_AGENT_STATUS_DIR` at a temp directory,
 pipes synthetic hook payloads through `./hook.sh`, and asserts the resulting
 record with `jq` after each step (main-loop transitions, subagent add/remove,
-self-heal, notifications, and a broken `hook-impl.sh` still exiting 0). Run it
-after any change to `hook.sh` or `hook-impl.sh`.
+self-heal, notifications, question dialogs, and a broken `hook-impl.sh` still exiting 0). It also imports the plugin and checks `classify` for every mark. Run it
+after any change to `hook.sh`, `hook-impl.sh` or the plugin.
 
 ## Files
 
 | Path | Role |
 |---|---|
 | `hook.sh` | Writes session state records (bash + jq, ~20 ms, always exits 0) |
-| `plugins/claude-agents.5s.sh` | SwiftBar plugin, refreshes every 5 s |
+| `plugins/claude-sessions.5s.py` | SwiftBar plugin, refreshes every 5 s |
 | `focus-tab.sh` | Focuses the terminal tab for a given tty (Terminal.app / iTerm2) |
 | `install.sh` | Idempotent installer |
 | `uninstall.sh` | Removes hooks, plugin link, and status directory |
@@ -264,4 +272,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-Built by Kasmira Stockton.
+Built by Kasmira Stockton. Forked and changed by Megan Holstein.

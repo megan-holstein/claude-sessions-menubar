@@ -1,5 +1,5 @@
 #!/bin/bash
-# claude-agent-menubar :: regression test
+# claude-sessions-menubar :: regression test
 #
 # Self-contained: points CLAUDE_AGENT_STATUS_DIR at a throwaway temp dir,
 # pipes synthetic Claude Code hook payloads through ./hook.sh, and asserts
@@ -64,7 +64,8 @@ check_py_compile() {
 # ============================================================================
 check_bash_syntax "bash -n hook.sh" "$SCRIPT_DIR/hook.sh"
 check_bash_syntax "bash -n hook-impl.sh" "$SCRIPT_DIR/hook-impl.sh"
-check_py_compile "python3 -m py_compile plugins/claude-agents.5s.sh" "$SCRIPT_DIR/plugins/claude-agents.5s.sh"
+PLUGIN="$SCRIPT_DIR/plugins/claude-sessions.5s.py"
+check_py_compile "python3 -m py_compile plugins/claude-sessions.5s.py" "$PLUGIN"
 
 # ============================================================================
 # Hook state-machine scenario
@@ -80,7 +81,7 @@ trap cleanup EXIT
 export CLAUDE_AGENT_STATUS_DIR="$TMP_STATUS_DIR"
 
 SID="11111111-1111-1111-1111-111111111111"
-CWD="/tmp/agent-menubar-test-proj"
+CWD="/tmp/claude-sessions-menubar-test-proj"
 REC="$TMP_STATUS_DIR/$SID.json"
 
 send() {
@@ -166,6 +167,133 @@ assert_eq "Notification idle_prompt -> state unchanged (needs_input)" "$(field .
 assert_eq "Notification idle_prompt -> main unchanged (needs_input)" "$(field .main)" "needs_input"
 assert_eq "Notification idle_prompt -> earlier prompt message preserved" "$(field .message)" "$MSG"
 assert_eq "Notification idle_prompt -> notification_type not overwritten" "$(field .notification_type)" "permission_prompt"
+
+# ============================================================================
+# Question dialogs: AskUserQuestion and ExitPlanMode fire no Notification
+# ============================================================================
+SID_Q="22222222-2222-2222-2222-222222222222"
+REC_Q="$TMP_STATUS_DIR/$SID_Q.json"
+qfield() { jq -r "$1" "$REC_Q" 2>/dev/null; }
+
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"UserPromptSubmit","cwd":"'"$CWD"'"}'
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","cwd":"'"$CWD"'"}'
+rc=$?
+assert_eq "AskUserQuestion PreToolUse -> hook.sh exits 0" "$rc" "0"
+assert_eq "AskUserQuestion -> state needs_input" "$(qfield .state)" "needs_input"
+assert_eq "AskUserQuestion -> main needs_input" "$(qfield .main)" "needs_input"
+assert_eq "AskUserQuestion -> message recorded" "$(qfield .message)" "Claude asked you a question"
+
+# a subagent tool call while the main loop is asking must not clear the question
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"PreToolUse","agent_id":"agentQ","agent_type":"general-purpose","tool_name":"Bash","cwd":"'"$CWD"'"}'
+assert_eq "subagent PreToolUse during AskUserQuestion -> still needs_input" "$(qfield .state)" "needs_input"
+assert_eq "subagent PreToolUse during AskUserQuestion -> message kept" "$(qfield .message)" "Claude asked you a question"
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"SubagentStop","agent_id":"agentQ","cwd":"'"$CWD"'"}'
+
+# the next main-context tool call moves it on and clears the message
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"PreToolUse","tool_name":"Read","cwd":"'"$CWD"'"}'
+assert_eq "next main PreToolUse after AskUserQuestion -> working" "$(qfield .state)" "working"
+assert_eq "next main PreToolUse after AskUserQuestion -> message cleared" "$(qfield 'has("message")')" "false"
+assert_eq "next main PreToolUse after AskUserQuestion -> notification_type cleared" "$(qfield 'has("notification_type")')" "false"
+
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"PreToolUse","tool_name":"ExitPlanMode","cwd":"'"$CWD"'"}'
+assert_eq "ExitPlanMode -> state needs_input" "$(qfield .state)" "needs_input"
+assert_eq "ExitPlanMode -> message recorded" "$(qfield .message)" "Claude is waiting for you to approve a plan"
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"Stop","cwd":"'"$CWD"'"}'
+assert_eq "Stop after ExitPlanMode -> main done" "$(qfield .main)" "done"
+assert_eq "Stop after ExitPlanMode -> message cleared" "$(qfield 'has("message")')" "false"
+
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","cwd":"'"$CWD"'"}'
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"UserPromptSubmit","cwd":"'"$CWD"'"}'
+assert_eq "UserPromptSubmit after AskUserQuestion -> working" "$(qfield .state)" "working"
+
+# a subagent's own AskUserQuestion is not the main loop asking
+send '{"session_id":"'"$SID_Q"'","hook_event_name":"PreToolUse","agent_id":"agentR","agent_type":"general-purpose","tool_name":"AskUserQuestion","cwd":"'"$CWD"'"}'
+assert_eq "subagent AskUserQuestion -> main not moved to needs_input" "$(qfield .main)" "working"
+
+# ============================================================================
+# Plugin: classify() maps a record (plus background-task count) to a mark
+# ============================================================================
+PY_OUT="$(python3 - "$PLUGIN" <<'PYEOF'
+import importlib.util, subprocess, sys
+
+spec = importlib.util.spec_from_file_location("claude_sessions_plugin", sys.argv[1])
+plugin = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(plugin)
+
+def rec(main, subs=0, state=None):
+    return {"state": state or main, "main": main, "subagents": subs, "agents": {}}
+
+cases = [
+    ("needs_input",                       rec("needs_input"),          0, ("needs_you", "🔴", "needs your answer")),
+    ("needs_input with subagents and bg", rec("needs_input", 2),       3, ("needs_you", "🔴", "needs your answer")),
+    ("done, nothing live",                rec("done"),                 0, ("done", "🟢", "finished")),
+    ("working",                           rec("working"),              0, ("working", "🔄", "working")),
+    ("working, 1 subagent",               rec("working", 1),           0, ("working", "🔄", "working · 1 subagent")),
+    ("working, 3 subagents",              rec("working", 3),           0, ("working", "🔄", "working · 3 subagents")),
+    ("working ignores background tasks",  rec("working"),              4, ("working", "🔄", "working")),
+    ("working + subagents ignores bg",    rec("working", 2),           4, ("working", "🔄", "working · 2 subagents")),
+    ("done, 1 subagent",                  rec("done", 1, "subagents"), 0, ("waiting", "⏳", "waiting on 1 subagent")),
+    ("done, 2 subagents",                 rec("done", 2, "subagents"), 0, ("waiting", "⏳", "waiting on 2 subagents")),
+    ("done, 1 background task",           rec("done"),                 1, ("waiting", "⏳", "waiting on 1 background task")),
+    ("done, 3 background tasks",          rec("done"),                 3, ("waiting", "⏳", "waiting on 3 background tasks")),
+    ("done, subagents and bg",            rec("done", 1, "subagents"), 2, ("waiting", "⏳", "waiting on 1 subagent, 2 background tasks")),
+    ("idle, nothing live",                rec("idle"),                 0, ("new", "⚪", "new, nothing asked yet")),
+    ("idle, 1 background task",           rec("idle"),                 1, ("waiting", "⏳", "waiting on 1 background task")),
+    ("idle, 1 subagent",                  rec("idle", 1, "subagents"), 0, ("waiting", "⏳", "waiting on 1 subagent")),
+]
+bad = 0
+for name, r, bg, want in cases:
+    got = plugin.classify(r, bg)
+    if got == want:
+        print("PASS: classify: %s" % name)
+    else:
+        bad += 1
+        print("FAIL: classify: %s" % name)
+        print("      expected %r got %r" % (want, got))
+
+real_run = subprocess.run
+
+# a failing ps must give a count of 0, never a crash
+def boom(*a, **k):
+    raise OSError("ps unavailable")
+subprocess.run = boom
+try:
+    ok = plugin.background_counts() == {}
+finally:
+    subprocess.run = real_run
+print(("PASS" if ok else "FAIL") + ": background_counts returns {} when ps fails")
+bad += 0 if ok else 1
+
+class Fake:
+    stdout = (
+        " 100 /bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1-a.sh && cmd\n"
+        " 100 /bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1-a.sh && other\n"
+        " 200 /bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-2-b.sh && cmd\n"
+        " 100 /usr/bin/python3 something-else\n"
+        " garbage\n"
+    )
+subprocess.run = lambda *a, **k: Fake()
+try:
+    counts = plugin.background_counts()
+finally:
+    subprocess.run = real_run
+ok = counts == {100: 2, 200: 1}
+print(("PASS" if ok else "FAIL") + ": background_counts counts snapshot children per parent pid")
+if not ok:
+    print("      got %r" % (counts,))
+bad += 0 if ok else 1
+sys.exit(1 if bad else 0)
+PYEOF
+)"
+PY_RC=$?
+while IFS= read -r line; do
+  case "$line" in
+    PASS:*) PASS_COUNT=$((PASS_COUNT + 1)) ;;
+    FAIL:*) FAIL_COUNT=$((FAIL_COUNT + 1)) ;;
+  esac
+  printf '%s\n' "$line"
+done <<< "$PY_OUT"
+assert_eq "plugin test script exits 0" "$PY_RC" "0"
 
 # ============================================================================
 # Launcher safety: a broken hook-impl.sh must still exit 0

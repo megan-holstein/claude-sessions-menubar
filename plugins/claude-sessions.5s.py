@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-# <xbar.title>Claude Agents</xbar.title>
+# <xbar.title>Claude Sessions</xbar.title>
 # <xbar.version>v1.0</xbar.version>
 # <xbar.author>Kasmira</xbar.author>
-# <xbar.desc>Shows every running Claude Code session, its state, and focuses its Terminal tab on click.</xbar.desc>
+# <xbar.desc>Shows every running Claude Code session and what you have to do next, and focuses its Terminal tab on click.</xbar.desc>
 # <xbar.dependencies>python3</xbar.dependencies>
 # <swiftbar.hideRunInTerminal>true</swiftbar.hideRunInTerminal>
 # <swiftbar.hideAbout>true</swiftbar.hideAbout>
 #
-# Reads the records written by ~/dev/agent-menubar/hook.sh.
+# Reads the records written by ~/.claude/claude-sessions-menubar/hook.sh.
 # Run with `--clear` to prune dead/corrupt records without printing a menu.
 
 import glob
@@ -27,13 +27,29 @@ STATUS_DIR = os.environ.get(
 _here = os.path.dirname(os.path.abspath(os.environ.get("SWIFTBAR_PLUGIN_PATH", __file__)))
 FOCUS = os.path.join(os.path.dirname(_here), "focus-tab.sh")
 if not os.path.isfile(FOCUS):
-    FOCUS = os.path.join(HOME, ".claude", "agent-menubar", "focus-tab.sh")
+    FOCUS = os.path.join(HOME, ".claude", "claude-sessions-menubar", "focus-tab.sh")
 
-ICON = {"working": "🟢", "subagents": "🔵", "needs_input": "🔴", "done": "✅", "idle": "⚪"}
-# menu list order (attention first): needs_input, done, subagents, working, idle
-ORDER = {"needs_input": 0, "done": 1, "subagents": 2, "working": 3, "idle": 4}
-# menu-bar title order, per spec: 🟢2 🔵1 🔴1
-TITLE_ORDER = ["working", "subagents", "needs_input", "done", "idle"]
+# Marks describe what YOU have to do, loudest first. The order is both the
+# menu-bar title order and the dropdown order.
+MARK_ORDER = ["needs_you", "done", "working", "waiting", "new"]
+MARK_ICON = {
+    "needs_you": "🔴",
+    "done": "🟢",
+    "working": "🔄",
+    "waiting": "⏳",
+    "new": "⚪",
+}
+LEGEND = [
+    ("needs_you", "act now — a prompt or question is blocking it"),
+    ("done", "your turn — it finished"),
+    ("working", "working"),
+    ("waiting", "waiting on its own subagents or background tasks"),
+    ("new", "opened, nothing asked yet"),
+]
+
+# Claude Code's Bash tool runs each command as a direct child of the `claude`
+# process, with a command line that contains this path.
+SHELL_SNAPSHOT = "/.claude/shell-snapshots/snapshot-"
 
 QUIET_AFTER = 15 * 60  # seconds since an agent's last event before it's flagged "(quiet?)"
 
@@ -59,6 +75,79 @@ def live_pids():
         except ValueError:
             pass
     return procs
+
+
+def background_counts():
+    """One `ps` call -> {claude pid: number of Bash-tool children}.
+
+    A Bash-tool child that is still alive after the turn ended is a
+    run_in_background task or a Monitor watcher. Any failure returns {}."""
+    try:
+        out = subprocess.run(
+            ["/bin/ps", "-Ao", "ppid=,args="],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+    except Exception:
+        return {}
+    counts = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        ppid, _, args = line.partition(" ")
+        if SHELL_SNAPSHOT not in args:
+            continue
+        try:
+            ppid = int(ppid)
+        except ValueError:
+            continue
+        counts[ppid] = counts.get(ppid, 0) + 1
+    return counts
+
+
+def _count(value):
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _plural(n, noun):
+    return "%d %s%s" % (n, noun, "" if n == 1 else "s")
+
+
+def classify(rec, bg_count=0):
+    """Decide the mark for one session record.
+
+    Returns (mark_key, icon, text). `bg_count` is the number of background
+    tasks the session's `claude` process holds; it changes the mark only when
+    the main loop is done or idle, because a foreground Bash call is normal
+    while the main loop works."""
+    state = rec.get("state")
+    main = rec.get("main") or state
+    n_sub = _count(rec.get("subagents"))
+    if not n_sub and isinstance(rec.get("agents"), dict):
+        n_sub = len(rec["agents"])
+    bg = _count(bg_count)
+
+    if main == "needs_input" or state == "needs_input":
+        key, text = "needs_you", "needs your answer"
+    elif main in ("done", "idle"):
+        if n_sub or bg:
+            waits = []
+            if n_sub:
+                waits.append(_plural(n_sub, "subagent"))
+            if bg:
+                waits.append(_plural(bg, "background task"))
+            key, text = "waiting", "waiting on " + ", ".join(waits)
+        elif main == "done":
+            key, text = "done", "finished"
+        else:
+            key, text = "new", "new, nothing asked yet"
+    else:
+        key = "working"
+        text = "working · %s" % _plural(n_sub, "subagent") if n_sub else "working"
+    return key, MARK_ICON[key], text
 
 
 def is_alive(pid, procs):
@@ -143,6 +232,14 @@ def clean(text):
 def tilde(path):
     path = str(path)
     return "~" + path[len(HOME):] if path.startswith(HOME) else path
+
+
+def _since_key(value):
+    """Sort key for `state_since`; a missing or unparseable value sorts first."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _agent_sort_key(item):
@@ -263,44 +360,37 @@ def main():
         return
 
     sessions = load()
+    bg = background_counts()
+
+    rows = []
+    for rec in sessions:
+        try:
+            pid = int(rec.get("pid") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        n_bg = bg.get(pid, 0)
+        rows.append((rec, n_bg) + classify(rec, n_bg))
 
     # ---- menu bar title ---------------------------------------------------
     counts = {}
-    for s in sessions:
-        st = s.get("state", "idle")
-        counts[st] = counts.get(st, 0) + 1
-    if not sessions:
+    for row in rows:
+        counts[row[2]] = counts.get(row[2], 0) + 1
+    if not rows:
         print("Claude: none")
     else:
-        parts = ["%s%d" % (ICON.get(st, "⚪"), counts[st])
-                 for st in TITLE_ORDER if counts.get(st)]
-        # any unexpected state still gets counted
-        for st in sorted(counts):
-            if st not in TITLE_ORDER:
-                parts.append("%s%d" % (ICON.get(st, "⚪"), counts[st]))
-        print(" ".join(parts))
+        print(" ".join("%s%d" % (MARK_ICON[k], counts[k])
+                       for k in MARK_ORDER if counts.get(k)))
 
     print("---")
 
-    if not sessions:
+    if not rows:
         print("No Claude Code sessions running | color=#888888")
     else:
-        sessions.sort(key=lambda s: (ORDER.get(s.get("state", "idle"), 4),
-                                     s.get("state_since", 0)))
-        for s in sessions:
-            state = s.get("state", "idle")
-            icon = ICON.get(state, "⚪")
+        rows.sort(key=lambda r: (MARK_ORDER.index(r[2]), _since_key(r[0].get("state_since"))))
+        for s, n_bg, mark, icon, text in rows:
             label = clean(session_label(s))
             tty = str(s.get("tty") or "")
-            if state == "subagents":
-                try:
-                    n = int(s.get("subagents") or 0)
-                except (TypeError, ValueError):
-                    n = 0
-                mid = "%d subagent%s" % (n, "" if n == 1 else "s")
-            else:
-                mid = state
-            line = "%s %s  %s  %s" % (icon, label, mid, elapsed(s.get("state_since")))
+            line = "%s %s  %s  %s" % (icon, label, text, elapsed(s.get("state_since")))
             params = ["symbolize=false"]
             if tty:
                 term_prog = clean(s.get("terminal") or "Apple_Terminal")
@@ -313,8 +403,11 @@ def main():
             print("--%s | symbolize=false color=#888888" % clean(tilde(s.get("cwd", ""))))
             if tty:
                 print("--tty /dev/%s · pid %s | color=#888888" % (clean(tty), s.get("pid", "?")))
-            if state == "subagents":
+            if _count(s.get("subagents")) or n_bg:
                 print("--main loop: %s | color=#888888" % clean(s.get("main") or "?"))
+            if n_bg:
+                print("--%s running in the background | color=#888888"
+                      % _plural(n_bg, "task"))
             agents = s.get("agents")
             if isinstance(agents, dict) and agents:
                 now = time.time()
@@ -332,7 +425,7 @@ def main():
                     print("--%s · up %s · last seen %s ago%s | color=#888888" % (
                         atype, elapsed(ag.get("since")), elapsed(seen), quiet))
             msg = s.get("message")
-            if msg and state == "needs_input":
+            if msg and mark == "needs_you":
                 print("--%s | symbolize=false length=70" % clean(msg))
             print("--up %s · last event: %s | color=#888888"
                   % (elapsed(s.get("started_at")), clean(s.get("last_event", "?"))))
@@ -342,6 +435,10 @@ def main():
           % STATUS_DIR)
     plugin = os.environ.get("SWIFTBAR_PLUGIN_PATH", os.path.abspath(__file__))
     print("Clear stale | bash=%s param1=--clear terminal=false refresh=true" % plugin)
+
+    print("---")
+    for key, meaning in LEGEND:
+        print("%s %s | symbolize=false color=#888888" % (MARK_ICON[key], meaning))
 
 
 if __name__ == "__main__":

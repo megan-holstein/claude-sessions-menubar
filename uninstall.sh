@@ -1,5 +1,5 @@
 #!/bin/bash
-# claude-agent-menubar :: uninstaller
+# claude-sessions-menubar :: uninstaller
 #
 # Removes the hook entries, the SwiftBar plugin file/symlink, and the status
 # directory. Leaves SwiftBar itself installed (prints how to remove it too)
@@ -11,9 +11,9 @@ set -u
 SETTINGS="$HOME/.claude/settings.json"
 STATUS_DIR="${CLAUDE_AGENT_STATUS_DIR:-$HOME/.claude/agent-status}"
 
-echo "== claude-agent-menubar uninstaller =="
+echo "== claude-sessions-menubar uninstaller =="
 
-# ---- 1. remove hook entries (any path ending in agent-menubar/hook.sh) ----
+# ---- 1. remove hook entries (any path ending in claude-sessions-menubar/hook.sh) ----
 if [ -f "$SETTINGS" ]; then
   BACKUP="$SETTINGS.bak-$(date +%Y%m%d%H%M%S)"
   RESULT="$(python3 - "$SETTINGS" "$BACKUP" <<'PY'
@@ -31,7 +31,7 @@ except Exception as exc:
 
 def is_ours(cmd):
     parts = str(cmd).split("/")
-    return len(parts) >= 2 and parts[-1] == "hook.sh" and parts[-2] == "agent-menubar"
+    return len(parts) >= 2 and parts[-1] == "hook.sh" and parts[-2] == "claude-sessions-menubar"
 
 hooks = cfg.get("hooks", {})
 changed = False
@@ -73,7 +73,7 @@ print("CHANGED")
 PY
 )"
   case "$RESULT" in
-    NOCHANGE) echo "No agent-menubar hook entries found in $SETTINGS." ;;
+    NOCHANGE) echo "No claude-sessions-menubar hook entries found in $SETTINGS." ;;
     CHANGED)  echo "Hook entries removed from $SETTINGS (backup: $BACKUP)" ;;
     ERROR:*)  echo "$RESULT" >&2 ;;
     *)        echo "$RESULT" >&2 ;;
@@ -84,11 +84,11 @@ fi
 
 # ---- 2. remove the plugin file/symlink from SwiftBar's plugin directory ---
 PLUGIN_DIR="$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || true)"
-if [ -n "$PLUGIN_DIR" ] && [ -e "$PLUGIN_DIR/claude-agents.5s.sh" ]; then
-  rm -f "$PLUGIN_DIR/claude-agents.5s.sh"
-  echo "Removed $PLUGIN_DIR/claude-agents.5s.sh"
+if [ -n "$PLUGIN_DIR" ] && [ -e "$PLUGIN_DIR/claude-sessions.5s.py" ]; then
+  rm -f "$PLUGIN_DIR/claude-sessions.5s.py"
+  echo "Removed $PLUGIN_DIR/claude-sessions.5s.py"
 else
-  echo "No claude-agents.5s.sh found in SwiftBar's plugin directory."
+  echo "No claude-sessions.5s.py found in SwiftBar's plugin directory."
 fi
 
 # ---- 3. drop the state directory ------------------------------------------

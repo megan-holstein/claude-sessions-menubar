@@ -1,20 +1,20 @@
 #!/bin/bash
-# claude-agent-menubar :: installer
+# claude-sessions-menubar :: installer
 #
 # Safe to re-run. Detects an already-working install (this exact source
 # folder already registered in ~/.claude/settings.json, or the canonical
-# ~/.claude/agent-menubar/ already in place) and treats that as done rather
+# ~/.claude/claude-sessions-menubar/ already in place) and treats that as done rather
 # than duplicating it. On a clean machine, installs to the canonical
-# location: ~/.claude/agent-menubar/.
+# location: ~/.claude/claude-sessions-menubar/.
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CANONICAL_DIR="$HOME/.claude/agent-menubar"
+CANONICAL_DIR="$HOME/.claude/claude-sessions-menubar"
 SETTINGS="$HOME/.claude/settings.json"
 HOOK_EVENTS="SessionStart UserPromptSubmit PreToolUse Stop Notification SubagentStart SubagentStop SessionEnd"
 
-echo "== claude-agent-menubar installer =="
+echo "== claude-sessions-menubar installer =="
 
 # ---- 0. platform check ------------------------------------------------
 if [ "$(uname -s)" != "Darwin" ]; then
@@ -30,7 +30,7 @@ fi
 
 # ---- 2. figure out where we're actually installing ----------------------
 # Detect an already-registered hook.sh anywhere (last two path segments
-# "agent-menubar/hook.sh") -- if found, adopt it instead of installing a
+# "claude-sessions-menubar/hook.sh") -- if found, adopt it instead of installing a
 # second copy alongside it.
 EXISTING_DIR="$(python3 - "$SETTINGS" <<'PY'
 import json, os, sys
@@ -50,7 +50,7 @@ for groups in hooks.values():
         for h in group.get("hooks", []):
             cmd = h.get("command", "")
             parts = cmd.split("/")
-            if len(parts) >= 2 and parts[-1] == "hook.sh" and parts[-2] == "agent-menubar":
+            if len(parts) >= 2 and parts[-1] == "hook.sh" and parts[-2] == "claude-sessions-menubar":
                 d = "/".join(parts[:-1])
                 if os.path.isfile(os.path.join(d, "hook.sh")):
                     print(d)
@@ -106,7 +106,7 @@ fi
 # ---- 5. SwiftBar plugin directory -----------------------------------------
 # Never hijack an existing SwiftBar setup: only set the preference if it's
 # unset. If it's already pointed somewhere else, put our plugin there instead.
-PLUGIN_SRC="$INSTALL_DIR/plugins/claude-agents.5s.sh"
+PLUGIN_SRC="$INSTALL_DIR/plugins/claude-sessions.5s.py"
 CURRENT_PLUGIN_DIR="$(defaults read com.ameba.SwiftBar PluginDirectory 2>/dev/null || true)"
 CURRENT_PLUGIN_DIR="${CURRENT_PLUGIN_DIR%/}"
 TARGET_PLUGIN_DIR="$INSTALL_DIR/plugins"
@@ -119,7 +119,7 @@ elif [ "$CURRENT_PLUGIN_DIR" = "$TARGET_PLUGIN_DIR" ]; then
 else
   echo "SwiftBar already has a PluginDirectory ($CURRENT_PLUGIN_DIR) -- linking the plugin there instead of changing it."
   mkdir -p "$CURRENT_PLUGIN_DIR"
-  ln -sf "$PLUGIN_SRC" "$CURRENT_PLUGIN_DIR/claude-agents.5s.sh"
+  ln -sf "$PLUGIN_SRC" "$CURRENT_PLUGIN_DIR/claude-sessions.5s.py"
 fi
 
 # ---- 6. merge hooks into ~/.claude/settings.json ---------------------------

@@ -1,5 +1,5 @@
 #!/bin/bash
-# claude-agent-menubar :: hook launcher
+# claude-sessions-menubar :: hook launcher
 #
 # DO NOT put logic here. This file is the command registered in
 # ~/.claude/settings.json; its only job is to run hook-impl.sh and ALWAYS
