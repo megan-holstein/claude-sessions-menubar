@@ -31,19 +31,19 @@ if not os.path.isfile(FOCUS):
 
 # Marks describe what YOU have to do, loudest first. The order is both the
 # menu-bar title order and the dropdown order.
-MARK_ORDER = ["needs_you", "done", "working", "waiting", "new"]
+# Working and waiting share one mark: either way the session needs nothing
+# from you yet. The row text still says which it is.
+MARK_ORDER = ["needs_you", "done", "busy", "new"]
 MARK_ICON = {
     "needs_you": "🔴",
     "done": "🟢",
-    "working": "🔄",
-    "waiting": "⏳",
+    "busy": "⏳",
     "new": "⚪",
 }
 LEGEND = [
     ("needs_you", "act now — a prompt or question is blocking it"),
     ("done", "your turn — it finished"),
-    ("working", "working"),
-    ("waiting", "waiting on its own subagents or background tasks"),
+    ("busy", "busy — working, or waiting on its own subagents or background tasks"),
     ("new", "opened, nothing asked yet"),
 ]
 
@@ -157,13 +157,13 @@ def classify(rec, bg_count=0, now=None):
                 waits.append(_plural(n_sub, "subagent"))
             if bg:
                 waits.append(_plural(bg, "background task"))
-            key, text = "waiting", "waiting on " + ", ".join(waits)
+            key, text = "busy", "waiting on " + ", ".join(waits)
         elif main == "done":
             key, text = "done", "finished"
         else:
             key, text = "new", "new, nothing asked yet"
     else:
-        key = "working"
+        key = "busy"
         text = "working · %s" % _plural(n_sub, "subagent") if n_sub else "working"
     return key, MARK_ICON[key], text
 

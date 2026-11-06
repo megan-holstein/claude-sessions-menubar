@@ -7,16 +7,16 @@ Mac. It shows what each session is doing right now, and clicking one
 focuses its terminal tab.
 
 ```
-🔴1 🟢2 🔄2 ⏳1                    <- menu bar
+🔴1 🟢2 ⏳3                        <- menu bar
 ├── 🔴 my-api             needs your answer  3m
 ├── 🟢 claude-sessions-menubar  finished  2m
 ├── 🟢 website            finished  14m
-├── 🔄 Refactor auth middleware  working · 2 subagents  48s
-├── 🔄 billing            working  1m
+├── ⏳ Refactor auth middleware  working · 2 subagents  48s
+├── ⏳ billing            working  1m
 └── ⏳ release            waiting on 1 subagent, 1 background task  9m
 ```
 
-## The five marks
+## The four marks
 
 The marks describe what *you* have to do, loudest first. The menu bar shows one count per mark present, in this order, and the dropdown is one flat list in the same order, oldest first within a mark.
 
@@ -24,11 +24,10 @@ The marks describe what *you* have to do, loudest first. The menu bar shows one 
 |---|---|---|
 | 🔴 | needs your answer | **Act now.** A permission prompt, a question dialog or a plan approval is blocking the session. |
 | 🟢 | finished | **Your turn.** The main loop finished, no subagent is live and no background task is running. |
-| 🔄 | working | The main loop is working. With live subagents the text reads `working · N subagents`. |
-| ⏳ | waiting on … | The main loop finished, but subagents or background tasks are still running: `waiting on 2 subagents`, `waiting on 1 background task` or `waiting on 1 subagent, 2 background tasks`. |
+| ⏳ | working, or waiting on … | **Nothing to do yet.** Either the main loop is working (with live subagents the text reads `working · N subagents`), or the main loop finished but subagents or background tasks are still running (`waiting on 2 subagents`, `waiting on 1 background task` or `waiting on 1 subagent, 2 background tasks`). Both share one mark and one count because neither asks anything of you; the row text says which it is. |
 | ⚪ | new, nothing asked yet | The session opened and has not received a prompt. |
 
-With no sessions the title reads `Claude: none`. The dropdown ends with a grey legend of the five marks.
+With no sessions the title reads `Claude: none`. The dropdown ends with a grey legend of the four marks.
 
 The plugin derives the mark from the record the hook writes (`main`, `subagents`) plus a count of background tasks, in one pure function (`classify` in the plugin). 🟢 means finished, not healthy: green is the cue to go and look.
 
@@ -169,7 +168,7 @@ also emits `SubagentStop` for its internal helper agents, with an empty
 carrying an `agent_id` self-heals a missing entry and refreshes its `seen`
 timestamp; an entry silent for an hour is pruned as a missed stop.
 
-Stored `state` = `needs_input` if `main` is `needs_input` → else `subagents` if any agent is live → else `main`. The plugin does not draw `state` directly: it derives the mark from `main`, the subagent count and the background-task count (see "The five marks"). `Stop` fires the instant the orchestrator ends its turn, even with background agents still going, which is why 🟢 requires both a finished main loop and nothing running underneath.
+Stored `state` = `needs_input` if `main` is `needs_input` → else `subagents` if any agent is live → else `main`. The plugin does not draw `state` directly: it derives the mark from `main`, the subagent count and the background-task count (see "The four marks"). `Stop` fires the instant the orchestrator ends its turn, even with background agents still going, which is why 🟢 requires both a finished main loop and nothing running underneath.
 
 Two details worth knowing:
 

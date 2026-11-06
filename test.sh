@@ -227,23 +227,24 @@ cases = [
     ("needs_input",                       rec("needs_input"),          0, ("needs_you", "🔴", "needs your answer")),
     ("needs_input with subagents and bg", rec("needs_input", 2),       3, ("needs_you", "🔴", "needs your answer")),
     ("done, nothing live",                rec("done"),                 0, ("done", "🟢", "finished")),
-    ("working",                           rec("working"),              0, ("working", "🔄", "working")),
-    ("working, 1 subagent",               rec("working", 1),           0, ("working", "🔄", "working · 1 subagent")),
-    ("working, 3 subagents",              rec("working", 3),           0, ("working", "🔄", "working · 3 subagents")),
-    ("working ignores background tasks",  rec("working"),              4, ("working", "🔄", "working")),
-    ("working + subagents ignores bg",    rec("working", 2),           4, ("working", "🔄", "working · 2 subagents")),
-    ("done, 1 subagent",                  rec("done", 1, "subagents"), 0, ("waiting", "⏳", "waiting on 1 subagent")),
-    ("done, 2 subagents",                 rec("done", 2, "subagents"), 0, ("waiting", "⏳", "waiting on 2 subagents")),
-    ("done, 1 background task",           rec("done"),                 1, ("waiting", "⏳", "waiting on 1 background task")),
-    ("done, 3 background tasks",          rec("done"),                 3, ("waiting", "⏳", "waiting on 3 background tasks")),
-    ("done, subagents and bg",            rec("done", 1, "subagents"), 2, ("waiting", "⏳", "waiting on 1 subagent, 2 background tasks")),
+    ("working",                           rec("working"),              0, ("busy", "⏳", "working")),
+    ("working, 1 subagent",               rec("working", 1),           0, ("busy", "⏳", "working · 1 subagent")),
+    ("working, 3 subagents",              rec("working", 3),           0, ("busy", "⏳", "working · 3 subagents")),
+    ("working ignores background tasks",  rec("working"),              4, ("busy", "⏳", "working")),
+    ("working + subagents ignores bg",    rec("working", 2),           4, ("busy", "⏳", "working · 2 subagents")),
+    ("done, 1 subagent",                  rec("done", 1, "subagents"), 0, ("busy", "⏳", "waiting on 1 subagent")),
+    ("done, 2 subagents",                 rec("done", 2, "subagents"), 0, ("busy", "⏳", "waiting on 2 subagents")),
+    ("done, 1 background task",           rec("done"),                 1, ("busy", "⏳", "waiting on 1 background task")),
+    ("done, 3 background tasks",          rec("done"),                 3, ("busy", "⏳", "waiting on 3 background tasks")),
+    ("done, subagents and bg",            rec("done", 1, "subagents"), 2, ("busy", "⏳", "waiting on 1 subagent, 2 background tasks")),
     ("idle, nothing live",                rec("idle"),                 0, ("new", "⚪", "new, nothing asked yet")),
-    ("idle, 1 background task",           rec("idle"),                 1, ("waiting", "⏳", "waiting on 1 background task")),
-    ("idle, 1 subagent",                  rec("idle", 1, "subagents"), 0, ("waiting", "⏳", "waiting on 1 subagent")),
+    ("idle, 1 background task",           rec("idle"),                 1, ("busy", "⏳", "waiting on 1 background task")),
+    ("idle, 1 subagent",                  rec("idle", 1, "subagents"), 0, ("busy", "⏳", "waiting on 1 subagent")),
 ]
 
 # a subagent stopped by hand fires no SubagentStop: silent past QUIET_AFTER with
 # no shell running, it no longer counts; with a shell running, it still does
+bad = 0
 NOW = 1_000_000.0
 def with_agents(main, *seen_ago):
     r = rec(main, len(seen_ago), "subagents")
@@ -252,9 +253,9 @@ def with_agents(main, *seen_ago):
     return r
 for name, r, bg, want in [
     ("done, stale subagent, no shell",       with_agents("done", 3600 - 60), 0, ("done", "🟢", "finished")),
-    ("done, stale subagent, shell running",  with_agents("done", 3600 - 60), 1, ("waiting", "⏳", "waiting on 1 subagent, 1 background task")),
-    ("done, one fresh one stale subagent",   with_agents("done", 30, 3000),  0, ("waiting", "⏳", "waiting on 1 subagent")),
-    ("working, stale subagent, no shell",    with_agents("working", 3000),   0, ("working", "🔄", "working")),
+    ("done, stale subagent, shell running",  with_agents("done", 3600 - 60), 1, ("busy", "⏳", "waiting on 1 subagent, 1 background task")),
+    ("done, one fresh one stale subagent",   with_agents("done", 30, 3000),  0, ("busy", "⏳", "waiting on 1 subagent")),
+    ("working, stale subagent, no shell",    with_agents("working", 3000),   0, ("busy", "⏳", "working")),
 ]:
     got = plugin.classify(r, bg, now=NOW)
     if got == want:
@@ -263,7 +264,6 @@ for name, r, bg, want in [
         bad += 1
         print("FAIL: classify: %s" % name)
         print("      expected %r got %r" % (want, got))
-bad = 0
 for name, r, bg, want in cases:
     got = plugin.classify(r, bg)
     if got == want:
