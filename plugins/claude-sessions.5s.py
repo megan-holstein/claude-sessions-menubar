@@ -51,7 +51,7 @@ LEGEND = [
 # process, with a command line that contains this path.
 SHELL_SNAPSHOT = "/.claude/shell-snapshots/snapshot-"
 
-QUIET_AFTER = 15 * 60  # seconds since an agent's last event before it's flagged "(quiet?)"
+QUIET_AFTER = 15 * 60  # seconds of silence after which a subagent with no shell children counts as gone
 
 
 def live_pids():
@@ -247,26 +247,11 @@ def clean(text):
     return text or "?"
 
 
-def tilde(path):
-    path = str(path)
-    return "~" + path[len(HOME):] if path.startswith(HOME) else path
-
-
 def _since_key(value):
     """Sort key for `state_since`; a missing or unparseable value sorts first."""
     try:
         return float(value)
     except (TypeError, ValueError):
-        return 0.0
-
-
-def _agent_sort_key(item):
-    """Sort live agents by `since`. Missing/unparseable `since` sorts first
-    rather than raising -- agents entries are untrusted, hand-editable JSON."""
-    _, ag = item
-    try:
-        return float((ag or {}).get("since"))
-    except (TypeError, ValueError, AttributeError):
         return 0.0
 
 
@@ -405,7 +390,7 @@ def main():
         print("No Claude Code sessions running | color=#888888")
     else:
         rows.sort(key=lambda r: (MARK_ORDER.index(r[2]), _since_key(r[0].get("state_since"))))
-        for s, n_bg, mark, icon, text in rows:
+        for s, _n_bg, _mark, icon, text in rows:
             label = clean(session_label(s))
             tty = str(s.get("tty") or "")
             line = "%s %s  %s  %s" % (icon, label, text, elapsed(s.get("state_since")))
@@ -416,37 +401,6 @@ def main():
                            "param2=%s" % term_prog,
                            "terminal=false", "refresh=false"]
             print("%s | %s" % (line, " ".join(params)))
-
-            # submenu: detail + the things you'd want on a stuck session
-            print("--%s | symbolize=false color=#888888" % clean(tilde(s.get("cwd", ""))))
-            if tty:
-                print("--tty /dev/%s · pid %s | color=#888888" % (clean(tty), s.get("pid", "?")))
-            if _count(s.get("subagents")) or n_bg:
-                print("--main loop: %s | color=#888888" % clean(s.get("main") or "?"))
-            if n_bg:
-                print("--%s running in the background | color=#888888"
-                      % _plural(n_bg, "task"))
-            agents = s.get("agents")
-            if isinstance(agents, dict) and agents:
-                now = time.time()
-                for _aid, ag in sorted(agents.items(), key=_agent_sort_key):
-                    if not isinstance(ag, dict):
-                        ag = {}
-                    atype = clean(ag.get("type") or "subagent")
-                    seen = ag.get("seen")
-                    quiet = ""
-                    try:
-                        if (now - float(seen)) > QUIET_AFTER:
-                            quiet = " (quiet?)"
-                    except (TypeError, ValueError):
-                        pass
-                    print("--%s · up %s · last seen %s ago%s | color=#888888" % (
-                        atype, elapsed(ag.get("since")), elapsed(seen), quiet))
-            msg = s.get("message")
-            if msg and mark == "needs_you":
-                print("--%s | symbolize=false length=70" % clean(msg))
-            print("--up %s · last event: %s | color=#888888"
-                  % (elapsed(s.get("started_at")), clean(s.get("last_event", "?"))))
 
     print("---")
     print("Open status folder | bash=/usr/bin/open param1=%s terminal=false refresh=false"

@@ -9,17 +9,9 @@ focuses its terminal tab.
 ```
 🔴1 🟢2 🔄2 ⏳1                    <- menu bar
 ├── 🔴 my-api             needs your answer  3m
-│     ~/dev/my-api
-│     tty /dev/ttys001 · pid 62324
-│     Claude needs your permission to run: git push origin test
-│     up 1h30m · last event: Notification
 ├── 🟢 claude-sessions-menubar  finished  2m
 ├── 🟢 website            finished  14m
 ├── 🔄 Refactor auth middleware  working · 2 subagents  48s
-│     ~/dev/website
-│     main loop: working
-│     general-purpose · up 5m · last seen 35s ago
-│     subagent · up 20m · last seen 16m ago (quiet?)
 ├── 🔄 billing            working  1m
 └── ⏳ release            waiting on 1 subagent, 1 background task  9m
 ```
@@ -138,7 +130,10 @@ Four pieces, no daemon and no database:
 4. **`focus-tab.sh <tty> [terminal]`** — AppleScript that walks the hosting
    terminal app's windows and tabs, finds the tab whose `tty` matches, selects
    it, and raises the window. Dispatches to a Terminal.app or iTerm2 script
-   depending on the recorded terminal app.
+   depending on the recorded terminal app. The Terminal.app script activates
+   Terminal first, un-minimizes the window if needed, and addresses it by its
+   `id`: AppleScript's loop variable is a positional reference (`window 2`),
+   so after the window order changes it names a different window.
 
 Records are the only shared state, so nothing needs to be restarted or kept in
 sync. A record is created by whichever event fires first and deleted on
@@ -150,8 +145,7 @@ the next refresh.
 Each session's label is picked with this precedence: a custom name you set
 with `/rename` in that session, otherwise Claude Code's auto-generated
 conversation title (read from the session's transcript), otherwise the
-project folder name. The submenu always shows the full cwd underneath,
-regardless of which one is used for the label.
+project folder name.
 
 ## State model
 
@@ -213,10 +207,9 @@ is `needs_input`.
 
 ## Menu items
 
-* **Click a session** → focuses its tab (Terminal.app / iTerm2 only, see above).
-* **Submenu** (hover a session) → cwd, tty/pid, the main loop's own state and
-  one line per live subagent (type, uptime, last seen — `(quiet?)` after 15 min
-  of silence), the background-task count, the pending prompt text when 🔴, uptime and last event.
+* **Click a session** → focuses its tab (Terminal.app / iTerm2 only, see above),
+  un-minimizing the window if needed. A session row has no submenu: macOS menus
+  do not reliably run the action of an item that also opens a submenu.
 * **Open status folder** → opens `~/.claude/agent-status`.
 * **Clear stale** → forces a prune of dead and unparseable records.
 
