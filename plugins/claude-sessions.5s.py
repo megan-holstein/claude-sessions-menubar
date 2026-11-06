@@ -54,10 +54,9 @@ SHELL_SNAPSHOT = "/.claude/shell-snapshots/snapshot-"
 QUIET_AFTER = 15 * 60  # seconds of silence after which a subagent with no shell children counts as gone
 
 # A busy session with no hook event of any kind for this long may be hung, so
-# its row carries a pill with the whole hours since its last event.
+# its row ends with SILENT_MARK.
 SILENT_AFTER = 60 * 60
-# ANSI SGR: black text on amber, padded so it reads as a pill.
-PILL_ON, PILL_OFF = "\x1b[30;43m", "\x1b[0m"
+SILENT_MARK = "🟡"
 
 
 def live_pids():
@@ -174,23 +173,19 @@ def classify(rec, bg_count=0, now=None):
     return key, MARK_ICON[key], text
 
 
-def silent_hours(rec, mark, now=None):
-    """Whole hours since the session's last hook event, or None.
+def is_silent(rec, mark, now=None):
+    """True when a busy (⏳) session has had no hook event for SILENT_AFTER.
 
-    Only a busy (⏳) session gets one: red and green already wait on you, and
-    a new session has nothing to do. `updated_at` moves on every event,
-    subagent events included, so a session that is really working keeps
-    resetting it."""
+    Red and green already wait on you, and a new session has nothing to do.
+    `updated_at` moves on every event, subagent events included, so a
+    session that is really working keeps resetting it."""
     if mark != "busy":
-        return None
+        return False
     try:
         last = float(rec.get("updated_at") or rec.get("state_since"))
     except (TypeError, ValueError):
-        return None
-    secs = (time.time() if now is None else now) - last
-    if secs < SILENT_AFTER:
-        return None
-    return int(secs // 3600)
+        return False
+    return (time.time() if now is None else now) - last >= SILENT_AFTER
 
 
 def is_alive(pid, procs):
@@ -420,10 +415,8 @@ def main():
             tty = str(s.get("tty") or "")
             line = "%s %s  %s  %s" % (icon, label, text, elapsed(s.get("state_since")))
             params = ["symbolize=false"]
-            hours = silent_hours(s, mark)
-            if hours is not None:
-                line += "  %s %d hr %s" % (PILL_ON, hours, PILL_OFF)
-                params.append("ansi=true")
+            if is_silent(s, mark):
+                line += "  " + SILENT_MARK
             if tty:
                 term_prog = clean(s.get("terminal") or "Apple_Terminal")
                 params += ["bash=%s" % FOCUS, "param1=%s" % tty,

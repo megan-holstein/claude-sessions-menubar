@@ -37,7 +37,7 @@ The plugin derives the mark from the record the hook writes (`main`, `subagents`
 
 ### Silent sessions
 
-A ⏳ session with no hook event of any kind for an hour may be hung, so its row ends with an amber pill giving the whole hours since its last event (`1 hr`, `2 hr`). The time comes from the record's `updated_at`, which every hook event moves, a subagent's included, so a session that is really working keeps resetting it. A long background task fires no events, so it can earn a pill while still running; the pill says to look, not that the session is dead. 🔴 and 🟢 rows never get one, since they are already waiting on you. The threshold is `SILENT_AFTER` in the plugin.
+A ⏳ session with no hook event of any kind for an hour may be hung, so its row ends with 🟡. The time comes from the record's `updated_at`, which every hook event moves, a subagent's included, so a session that is really working keeps resetting it. A long background task fires no events, so it can earn a 🟡 while still running; the mark says to look, not that the session is dead. 🔴 and 🟢 rows never get one, since they are already waiting on you. The threshold is `SILENT_AFTER` in the plugin.
 
 ### Background tasks
 
