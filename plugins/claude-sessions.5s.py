@@ -116,7 +116,27 @@ def _plural(n, noun):
     return "%d %s%s" % (n, noun, "" if n == 1 else "s")
 
 
-def classify(rec, bg_count=0):
+def _live_subagents(rec, bg, now):
+    """Subagents still counted as live. Claude Code sends no SubagentStop for
+    a subagent the user stops by hand, so its entry would otherwise linger
+    until the hook's one-hour expiry. An entry silent for QUIET_AFTER while
+    the session holds no shell children is counted as gone: a live subagent
+    either fires hook events or is running a shell command."""
+    agents = rec.get("agents")
+    if not isinstance(agents, dict) or not agents:
+        return _count(rec.get("subagents"))
+    live = 0
+    for ag in agents.values():
+        try:
+            quiet = (now - float((ag or {}).get("seen"))) > QUIET_AFTER
+        except (TypeError, ValueError, AttributeError):
+            quiet = False
+        if not (quiet and not bg):
+            live += 1
+    return live
+
+
+def classify(rec, bg_count=0, now=None):
     """Decide the mark for one session record.
 
     Returns (mark_key, icon, text). `bg_count` is the number of background
@@ -125,10 +145,8 @@ def classify(rec, bg_count=0):
     while the main loop works."""
     state = rec.get("state")
     main = rec.get("main") or state
-    n_sub = _count(rec.get("subagents"))
-    if not n_sub and isinstance(rec.get("agents"), dict):
-        n_sub = len(rec["agents"])
     bg = _count(bg_count)
+    n_sub = _live_subagents(rec, bg, time.time() if now is None else now)
 
     if main == "needs_input" or state == "needs_input":
         key, text = "needs_you", "needs your answer"

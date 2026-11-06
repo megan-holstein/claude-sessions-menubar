@@ -241,6 +241,28 @@ cases = [
     ("idle, 1 background task",           rec("idle"),                 1, ("waiting", "⏳", "waiting on 1 background task")),
     ("idle, 1 subagent",                  rec("idle", 1, "subagents"), 0, ("waiting", "⏳", "waiting on 1 subagent")),
 ]
+
+# a subagent stopped by hand fires no SubagentStop: silent past QUIET_AFTER with
+# no shell running, it no longer counts; with a shell running, it still does
+NOW = 1_000_000.0
+def with_agents(main, *seen_ago):
+    r = rec(main, len(seen_ago), "subagents")
+    r["agents"] = {"a%d" % i: {"type": "general-purpose", "since": NOW - 9999, "seen": NOW - ago}
+                   for i, ago in enumerate(seen_ago)}
+    return r
+for name, r, bg, want in [
+    ("done, stale subagent, no shell",       with_agents("done", 3600 - 60), 0, ("done", "🟢", "finished")),
+    ("done, stale subagent, shell running",  with_agents("done", 3600 - 60), 1, ("waiting", "⏳", "waiting on 1 subagent, 1 background task")),
+    ("done, one fresh one stale subagent",   with_agents("done", 30, 3000),  0, ("waiting", "⏳", "waiting on 1 subagent")),
+    ("working, stale subagent, no shell",    with_agents("working", 3000),   0, ("working", "🔄", "working")),
+]:
+    got = plugin.classify(r, bg, now=NOW)
+    if got == want:
+        print("PASS: classify: %s" % name)
+    else:
+        bad += 1
+        print("FAIL: classify: %s" % name)
+        print("      expected %r got %r" % (want, got))
 bad = 0
 for name, r, bg, want in cases:
     got = plugin.classify(r, bg)

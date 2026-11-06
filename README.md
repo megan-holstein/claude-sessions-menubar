@@ -233,6 +233,7 @@ is `needs_input`.
   neither app has ever heard of.
 * **🔴 `needs_input` only means a real dialog.** Only `permission_prompt` and `elicitation_dialog` notifications, and the `AskUserQuestion` and `ExitPlanMode` tools, turn a session red. `idle_prompt` (Claude finished and you haven't typed for a while) leaves it at 🟢 finished, so under `--dangerously-skip-permissions` you will rarely see red except for questions and plan approvals.
 * **Background tasks are inferred from the process table.** A Bash-tool child that outlives the turn counts as a background task, whatever it does. A hook cannot see these tasks, so the plugin counts them itself on each refresh.
+* **A subagent you stop by hand fires no `SubagentStop`.** So the plugin stops counting a subagent once it has been silent for 15 minutes while the session runs no shell command, because a live subagent either fires hook events or is running a command. The hook still prunes the entry from the record after an hour.
 * **Subagent counts can drift.** Parallel subagents finishing at the same
   instant can race on the read-modify-write of one record and lose a decrement.
   The counter is clamped at zero and resets on the next `SessionStart`; it's a
