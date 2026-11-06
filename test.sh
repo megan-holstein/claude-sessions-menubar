@@ -318,6 +318,62 @@ for name, r, mark, want in [
         print("FAIL: is_silent: %s" % name)
         print("      expected %r got %r" % (want, got))
 
+# a finished session whose last reply is the wait line, with nothing live
+WAITING_TEXT = "said it's waiting, nothing is running"
+for name, r, bg, want in [
+    ("done, says waiting, nothing live", rec("done"),                 0, ("done", "🟢", WAITING_TEXT)),
+    ("done, says waiting, 1 bg task",    rec("done"),                 1, ("busy", "⏳", "waiting on 1 background task")),
+    ("done, says waiting, 1 subagent",   rec("done", 1, "subagents"), 0, ("busy", "⏳", "waiting on 1 subagent")),
+    ("idle, says waiting",               rec("idle"),                 0, ("new", "⚪", "new, nothing asked yet")),
+    ("working, says waiting",            rec("working"),              0, ("busy", "⏳", "working")),
+]:
+    got = plugin.classify(r, bg, says_waiting=True)
+    if got == want:
+        print("PASS: classify: %s" % name)
+    else:
+        bad += 1
+        print("FAIL: classify: %s" % name)
+        print("      expected %r got %r" % (want, got))
+
+# says_waiting reads the last main-loop reply from the transcript
+import json, os, tempfile
+home = tempfile.mkdtemp()
+os.makedirs(os.path.join(home, ".claude", "projects", "-p"))
+real_home = plugin.HOME
+plugin.HOME = home
+def entry(text=None, tool=False, side=False):
+    content = []
+    if text is not None:
+        content.append({"type": "text", "text": text})
+    if tool:
+        content.append({"type": "tool_use", "name": "Bash", "input": {}})
+    return {"type": "assistant", "isSidechain": side, "message": {"content": content}}
+try:
+    for name, lines, want in [
+        ("reply ends with the wait line",    [entry("Waiting on #954.\n\n🔄 Waiting")],                     True),
+        ("reply is the wait line alone",     [entry("🔄 Waiting\n")],                                      True),
+        ("reply is a finished report",       [entry("🔄 Waiting"), entry("Merged.\n\n✅ Done")],           False),
+        ("wait line mid-reply only",         [entry("🔄 Waiting was wrong; it's done.")],                  False),
+        ("tool-only entry after the reply",  [entry("🔄 Waiting"), entry(tool=True)],                       True),
+        ("sidechain entry ignored",          [entry("Done."), entry("🔄 Waiting", side=True)],              False),
+        ("no transcript",                    None,                                                          False),
+    ]:
+        sid = "s-" + name.replace(" ", "-")
+        if lines is not None:
+            with open(os.path.join(home, ".claude", "projects", "-p", sid + ".jsonl"), "w") as fh:
+                for l in lines:
+                    fh.write(json.dumps(l, ensure_ascii=False, separators=(",", ":")) + "\n")
+                fh.write("not json\n")
+        got = plugin.says_waiting(sid)
+        if got == want:
+            print("PASS: says_waiting: %s" % name)
+        else:
+            bad += 1
+            print("FAIL: says_waiting: %s" % name)
+            print("      expected %r got %r" % (want, got))
+finally:
+    plugin.HOME = real_home
+
 real_run = subprocess.run
 
 # a failing ps must give a count of 0, never a crash

@@ -23,7 +23,7 @@ The marks describe what *you* have to do, loudest first. The menu bar shows one 
 | Mark | Text | Meaning |
 |---|---|---|
 | 🔴 | needs your answer | **Act now.** A permission prompt, a question dialog or a plan approval is blocking the session. |
-| 🟢 | finished | **Your turn.** The main loop finished, no subagent is live and no background task is running. |
+| 🟢 | finished, or said it's waiting, nothing is running | **Your turn.** The main loop finished, no subagent is live and no background task is running. When its last reply ended with a wait line, the text says so, because nothing will wake that session but you. |
 | ⏳ | working, or waiting on … | **Nothing to do yet.** Either the main loop is working (with live subagents the text reads `working · N subagents`), or the main loop finished but subagents or background tasks are still running (`waiting on 2 subagents`, `waiting on 1 background task` or `waiting on 1 subagent, 2 background tasks`). Both share one mark and one count because neither asks anything of you; the row text says which it is. |
 | ⚪ | new, nothing asked yet | The session opened and has not received a prompt. |
 
@@ -34,6 +34,10 @@ The plugin derives the mark from the record the hook writes (`main`, `subagents`
 ### Question dialogs
 
 `AskUserQuestion` and `ExitPlanMode` open a dialog that fires no `Notification`, so a session blocked on one used to show as working. The hook now treats a main-context `PreToolUse` for either tool as `needs_input` and records the message `Claude asked you a question` or `Claude is waiting for you to approve a plan`. The next main-context `PreToolUse`, `UserPromptSubmit` or `Stop` moves the session on and clears the message. A subagent's tool calls do not clear a question the main loop is still asking.
+
+### Waiting on nothing
+
+A session can end its turn to wait on work that then never reports back: a subagent that ended its own turn on a Monitor, say, and was not resumed when the Monitor fired. Nothing is left running, so the row is 🟢, but `finished` would hide that the session believes it is still waiting. When a 🟢 session's last main-loop reply ends with one of `WAIT_MARKERS` in the plugin (`🔄 Waiting` by default; edit it to match the wait line your instructions use), the row reads `said it's waiting, nothing is running`. The plugin reads only the tail of that session's transcript, and only for 🟢 rows. A pending `ScheduleWakeup` or cron job has no process to count, so a session waiting on one shows this text too.
 
 ### Silent sessions
 

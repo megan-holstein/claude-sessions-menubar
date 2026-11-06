@@ -42,7 +42,7 @@ MARK_ICON = {
 }
 LEGEND = [
     ("needs_you", "act now — a prompt or question is blocking it"),
-    ("done", "your turn — it finished"),
+    ("done", "your turn — it finished, or is waiting on nothing that is running"),
     ("busy", "busy — working, or waiting on its own subagents or background tasks"),
     ("new", "opened, nothing asked yet"),
 ]
@@ -57,6 +57,12 @@ QUIET_AFTER = 15 * 60  # seconds of silence after which a subagent with no shell
 # its row ends with SILENT_MARK.
 SILENT_AFTER = 60 * 60
 SILENT_MARK = "🟡"
+
+# Reply endings that mean "this turn ended to wait". A finished session whose
+# last main-loop reply ends with one, while no subagent or background task is
+# alive, is waiting on something that will never wake it, so its row says so.
+# Matches the wait line this machine's instructions require; edit for yours.
+WAIT_MARKERS = ("🔄 Waiting",)
 
 
 def live_pids():
@@ -141,13 +147,15 @@ def _live_subagents(rec, bg, now):
     return live
 
 
-def classify(rec, bg_count=0, now=None):
+def classify(rec, bg_count=0, now=None, says_waiting=False):
     """Decide the mark for one session record.
 
     Returns (mark_key, icon, text). `bg_count` is the number of background
     tasks the session's `claude` process holds; it changes the mark only when
     the main loop is done or idle, because a foreground Bash call is normal
-    while the main loop works."""
+    while the main loop works. `says_waiting` is True when the main loop's
+    last reply ends with a WAIT_MARKERS line; with nothing live it changes
+    only the text of a 🟢 row, since nothing will wake the session but you."""
     state = rec.get("state")
     main = rec.get("main") or state
     bg = _count(bg_count)
@@ -163,6 +171,8 @@ def classify(rec, bg_count=0, now=None):
             if bg:
                 waits.append(_plural(bg, "background task"))
             key, text = "busy", "waiting on " + ", ".join(waits)
+        elif main == "done" and says_waiting:
+            key, text = "done", "said it's waiting, nothing is running"
         elif main == "done":
             key, text = "done", "finished"
         else:
@@ -337,7 +347,9 @@ def _last_ai_title(path):
         return None
 
 
-def _transcript_title(session_id):
+def _transcript_path(session_id):
+    """The session's main transcript, or None. Subagent transcripts live in a
+    separate folder, so this file holds the main loop alone."""
     if not session_id:
         return None
     try:
@@ -345,10 +357,56 @@ def _transcript_title(session_id):
             HOME, ".claude", "projects", "*", "%s.jsonl" % session_id))
         if not matches:
             return None
-        path = max(matches, key=lambda p: os.path.getmtime(p))
-        return _last_ai_title(path)
+        return max(matches, key=lambda p: os.path.getmtime(p))
     except Exception:
         return None
+
+
+def _transcript_title(session_id):
+    path = _transcript_path(session_id)
+    return _last_ai_title(path) if path else None
+
+
+def _last_reply_text(lines):
+    """Text of the last main-loop assistant entry that carries text, or None."""
+    marker = b'"assistant"'
+    text = None
+    for line in lines:
+        if marker not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(rec, dict) or rec.get("type") != "assistant" or rec.get("isSidechain"):
+            continue
+        content = (rec.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        parts = [b.get("text") for b in content
+                 if isinstance(b, dict) and b.get("type") == "text" and b.get("text")]
+        if parts:
+            text = "\n".join(str(t) for t in parts)
+    return text
+
+
+def says_waiting(session_id):
+    """True when the main loop's last reply ends with a WAIT_MARKERS line.
+    Reads only the transcript's tail; any failure is False."""
+    TAIL = 256 * 1024
+    path = _transcript_path(session_id)
+    if not path:
+        return False
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            if size > TAIL:
+                fh.seek(size - TAIL)
+                fh.readline()
+            text = _last_reply_text(fh)
+    except Exception:
+        return False
+    return bool(text) and text.rstrip().endswith(WAIT_MARKERS)
 
 
 def truncate(text, limit=36):
@@ -392,7 +450,11 @@ def main():
         except (TypeError, ValueError):
             pid = 0
         n_bg = bg.get(pid, 0)
-        rows.append((rec, n_bg) + classify(rec, n_bg))
+        verdict = classify(rec, n_bg)
+        # only a 🟢 row can change, so only its transcript is read
+        if verdict[0] == "done" and says_waiting(rec.get("session_id")):
+            verdict = classify(rec, n_bg, says_waiting=True)
+        rows.append((rec, n_bg) + verdict)
 
     # ---- menu bar title ---------------------------------------------------
     counts = {}
