@@ -103,7 +103,7 @@ prints the commands to remove it too, and leaves the installed folder
 
 Four pieces, no daemon and no database:
 
-1. **`hook.sh`** — the launcher registered on eight Claude Code hook events in
+1. **`hook.sh`** — the launcher registered on nine Claude Code hook events in
    `~/.claude/settings.json`. It does nothing but run `hook-impl.sh` and always
    exit 0, because a hook that exits 2 (which bash does on a syntax error)
    blocks the tool call or session it's attached to — machine-wide — so
@@ -158,7 +158,7 @@ from the main context (payloads without an `agent_id`):
 | `idle` | `SessionStart` | Session opened, nothing asked of it yet |
 | `working` | `UserPromptSubmit`, `PreToolUse` (main context) | Claude is actively doing something |
 | `done` | `Stop` | The main loop ended its turn |
-| `needs_input` | `Notification`, or a main-context `PreToolUse` of `AskUserQuestion` / `ExitPlanMode` | Permission prompt, elicitation dialog, question or plan approval — **you are blocking it** |
+| `needs_input` | `PermissionRequest` (any context), `Notification`, or a main-context `PreToolUse` of `AskUserQuestion` / `ExitPlanMode` | Permission prompt, elicitation dialog, question or plan approval — **you are blocking it** |
 | *(deleted)* | `SessionEnd` | Record removed |
 
 **`agents`** — the set of live subagents, keyed by `agent_id`. `SubagentStart`
@@ -223,7 +223,7 @@ is `needs_input`.
   terminal-agnostic) but clicking them reports that no matching tab was
   found. tmux is the awkward case: the tty recorded is the pane's, which
   neither app has ever heard of.
-* **🔴 `needs_input` only means a real dialog.** Only `permission_prompt` and `elicitation_dialog` notifications, and the `AskUserQuestion` and `ExitPlanMode` tools, turn a session red. `idle_prompt` (Claude finished and you haven't typed for a while) leaves it at 🟢 finished, so under `--dangerously-skip-permissions` you will rarely see red except for questions and plan approvals.
+* **🔴 `needs_input` only means a real dialog.** `PermissionRequest`, the `permission_prompt` and `elicitation_dialog` notifications, and the `AskUserQuestion` and `ExitPlanMode` tools turn a session red. `PermissionRequest` fires the moment a permission dialog opens; the notification comes later, and none reached the hook while a dangerous-`rm` dialog (which asks even under `--dangerously-skip-permissions`) was open, so without `PermissionRequest` a session blocked on it showed as working. `idle_prompt` (Claude finished and you haven't typed for a while) leaves it at 🟢 finished.
 * **Background tasks are inferred from the process table.** A Bash-tool child that outlives the turn counts as a background task, whatever it does. A hook cannot see these tasks, so the plugin counts them itself on each refresh.
 * **A subagent you stop by hand fires no `SubagentStop`.** So the plugin stops counting a subagent once it has been silent for 15 minutes while the session runs no shell command, because a live subagent either fires hook events or is running a command. The hook still prunes the entry from the record after an hour.
 * **Subagent counts can drift.** Parallel subagents finishing at the same
