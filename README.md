@@ -35,6 +35,10 @@ The plugin derives the mark from the record the hook writes (`main`, `subagents`
 
 `AskUserQuestion` and `ExitPlanMode` open a dialog that fires no `Notification`, so a session blocked on one used to show as working. The hook now treats a main-context `PreToolUse` for either tool as `needs_input` and records the message `Claude asked you a question` or `Claude is waiting for you to approve a plan`. The next main-context `PreToolUse`, `UserPromptSubmit` or `Stop` moves the session on and clears the message. A subagent's tool calls do not clear a question the main loop is still asking.
 
+### Silent sessions
+
+A ⏳ session with no hook event of any kind for an hour may be hung, so its row ends with an amber pill giving the whole hours since its last event (`1 hr`, `2 hr`). The time comes from the record's `updated_at`, which every hook event moves, a subagent's included, so a session that is really working keeps resetting it. A long background task fires no events, so it can earn a pill while still running; the pill says to look, not that the session is dead. 🔴 and 🟢 rows never get one, since they are already waiting on you. The threshold is `SILENT_AFTER` in the plugin.
+
 ### Background tasks
 
 Claude Code's Bash tool runs each command as a direct child of the `claude` process, with a command line that contains `/.claude/shell-snapshots/snapshot-`. A `run_in_background` task or a Monitor watcher keeps such a child alive after the turn ends. On each refresh the plugin makes one `/bin/ps -Ao ppid=,args=` call and counts those children per `claude` pid. The count changes the mark only when `main` is `done` or `idle`, because a foreground Bash call is normal while the main loop works. If the `ps` call fails, the count is 0.

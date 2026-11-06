@@ -301,6 +301,24 @@ for name, r, bg, want in cases:
         print("FAIL: classify: %s" % name)
         print("      expected %r got %r" % (want, got))
 
+# a busy session silent past SILENT_AFTER carries a pill of whole hours
+for name, r, mark, want in [
+    ("busy, silent 59m",       {"updated_at": NOW - 59 * 60},      "busy",      None),
+    ("busy, silent 1h",        {"updated_at": NOW - 3600},         "busy",      1),
+    ("busy, silent 2h59m",     {"updated_at": NOW - 179 * 60},     "busy",      2),
+    ("busy, no updated_at",    {"state_since": NOW - 7200},        "busy",      2),
+    ("busy, no timestamps",    {},                                 "busy",      None),
+    ("done, silent 3h",        {"updated_at": NOW - 3 * 3600},     "done",      None),
+    ("needs_you, silent 3h",   {"updated_at": NOW - 3 * 3600},     "needs_you", None),
+]:
+    got = plugin.silent_hours(r, mark, now=NOW)
+    if got == want:
+        print("PASS: silent_hours: %s" % name)
+    else:
+        bad += 1
+        print("FAIL: silent_hours: %s" % name)
+        print("      expected %r got %r" % (want, got))
+
 real_run = subprocess.run
 
 # a failing ps must give a count of 0, never a crash
