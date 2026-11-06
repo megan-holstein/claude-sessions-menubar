@@ -145,9 +145,9 @@ printf '%s' "$payload" | "$JQ" -c \
                 then "done" else $pm end)
              elif $ask != "" then "needs_input"
              else "working" end)
-     # PermissionRequest fires as the dialog opens. A Notification comes only
-     # after an idle delay, if at all: none reached the hook while a
-     # dangerous-rm dialog was open. So PermissionRequest is the signal.
+     # PermissionRequest fires as the dialog opens. The permission_prompt
+     # Notification follows only after an idle delay (about 6 s in testing),
+     # and until then a session blocked on the dialog showed as working.
      elif $ev == "PermissionRequest"                           then "needs_input"
      elif $ev == "Stop"                                        then "done"
      elif $ev == "Notification" then (if $quiet then $pm else "needs_input" end)
