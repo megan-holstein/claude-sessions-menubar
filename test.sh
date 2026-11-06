@@ -301,33 +301,51 @@ for name, r, bg, want in cases:
         print("FAIL: classify: %s" % name)
         print("      expected %r got %r" % (want, got))
 
-# a busy session silent past SILENT_AFTER is marked
-for name, r, mark, want in [
-    ("busy, silent 59m",       {"updated_at": NOW - 59 * 60},      "busy",      False),
-    ("busy, silent 1h",        {"updated_at": NOW - 3600},         "busy",      True),
-    ("busy, no updated_at",    {"state_since": NOW - 7200},        "busy",      True),
-    ("busy, no timestamps",    {},                                 "busy",      False),
-    ("done, silent 3h",        {"updated_at": NOW - 3 * 3600},     "done",      False),
-    ("needs_you, silent 3h",   {"updated_at": NOW - 3 * 3600},     "needs_you", False),
+# stuck: a busy session silent past SILENT_AFTER with no shell child alive
+def silent_rec(main, mins, subs=0, key="updated_at"):
+    r = rec(main, subs, "subagents" if subs else None)
+    r[key] = NOW - mins * 60
+    return r
+for name, r, bg, kw, want in [
+    ("working, silent 61m, no shell",     silent_rec("working", 61),          0, {}, ("stuck", "🟡", "working, silent 1h01m")),
+    ("working, silent 61m, shell alive",  silent_rec("working", 61),          1, {}, ("busy", "⏳", "working")),
+    ("working, silent 59m",               silent_rec("working", 59),          0, {}, ("busy", "⏳", "working")),
+    ("working, silent exactly 1h",        silent_rec("working", 60),          0, {}, ("stuck", "🟡", "working, silent 1h00m")),
+    ("working, silent, state_since only", silent_rec("working", 125, key="state_since"), 0, {}, ("stuck", "🟡", "working, silent 2h05m")),
+    ("working, no timestamps",            rec("working"),                     0, {}, ("busy", "⏳", "working")),
+    ("working + subagent, silent 61m",    silent_rec("working", 61, 1),       0, {}, ("stuck", "🟡", "working · 1 subagent, silent 1h01m")),
+    ("done, 1 subagent, silent 61m",      silent_rec("done", 61, 1),          0, {}, ("stuck", "🟡", "waiting on 1 subagent, silent 1h01m")),
+    ("done, 1 subagent, silent 59m",      silent_rec("done", 59, 1),          0, {}, ("busy", "⏳", "waiting on 1 subagent")),
+    ("done, 1 bg task, silent 3h",        silent_rec("done", 180),            1, {}, ("busy", "⏳", "waiting on 1 background task")),
+    ("done, subagent + bg, silent 3h",    silent_rec("done", 180, 1),         1, {}, ("busy", "⏳", "waiting on 1 subagent, 1 background task")),
+    ("done, 1 scheduled, silent 3h",      silent_rec("done", 180),            0, {"scheduled": 1}, ("busy", "⏳", "waiting on 1 scheduled wakeup")),
+    ("done, subagent + scheduled, silent 3h", silent_rec("done", 180, 1),     0, {"scheduled": 1}, ("busy", "⏳", "waiting on 1 subagent, 1 scheduled wakeup")),
+    ("done, nothing live, silent 3h",     silent_rec("done", 180),            0, {}, ("done", "🟢", "finished")),
+    ("idle, nothing live, silent 3h",     silent_rec("idle", 180),            0, {}, ("new", "⚪", "new, nothing asked yet")),
+    ("needs_input, silent 3h",            silent_rec("needs_input", 180),     0, {}, ("needs_you", "🔴", "needs your answer")),
 ]:
-    got = plugin.is_silent(r, mark, now=NOW)
+    got = plugin.classify(r, bg, now=NOW, **kw)
     if got == want:
-        print("PASS: is_silent: %s" % name)
+        print("PASS: classify: %s" % name)
     else:
         bad += 1
-        print("FAIL: is_silent: %s" % name)
+        print("FAIL: classify: %s" % name)
         print("      expected %r got %r" % (want, got))
 
 # a finished session whose last reply is the wait line, with nothing live
 WAITING_TEXT = "said it's waiting, nothing is running"
-for name, r, bg, want in [
-    ("done, says waiting, nothing live", rec("done"),                 0, ("done", "🟢", WAITING_TEXT)),
-    ("done, says waiting, 1 bg task",    rec("done"),                 1, ("busy", "⏳", "waiting on 1 background task")),
-    ("done, says waiting, 1 subagent",   rec("done", 1, "subagents"), 0, ("busy", "⏳", "waiting on 1 subagent")),
-    ("idle, says waiting",               rec("idle"),                 0, ("new", "⚪", "new, nothing asked yet")),
-    ("working, says waiting",            rec("working"),              0, ("busy", "⏳", "working")),
+for name, r, bg, kw, want in [
+    ("done, says waiting, nothing live", rec("done"),                 0, {},                ("stuck", "🟡", WAITING_TEXT)),
+    ("done, says waiting, 1 bg task",    rec("done"),                 1, {},                ("busy", "⏳", "waiting on 1 background task")),
+    ("done, says waiting, 1 subagent",   rec("done", 1, "subagents"), 0, {},                ("busy", "⏳", "waiting on 1 subagent")),
+    ("done, says waiting, 1 scheduled",  rec("done"),                 0, {"scheduled": 1},  ("busy", "⏳", "waiting on 1 scheduled wakeup")),
+    ("done, 2 scheduled",                rec("done"),                 0, {"scheduled": 2},  ("busy", "⏳", "waiting on 2 scheduled wakeups")),
+    ("done, subagent, bg and scheduled", rec("done", 2, "subagents"), 3, {"scheduled": 1},  ("busy", "⏳", "waiting on 2 subagents, 3 background tasks, 1 scheduled wakeup")),
+    ("idle, says waiting",               rec("idle"),                 0, {},                ("new", "⚪", "new, nothing asked yet")),
+    ("working, says waiting",            rec("working"),              0, {},                ("busy", "⏳", "working")),
+    ("working ignores scheduled",        rec("working"),              0, {"scheduled": 2},  ("busy", "⏳", "working")),
 ]:
-    got = plugin.classify(r, bg, says_waiting=True)
+    got = plugin.classify(r, bg, says_waiting=True, **kw)
     if got == want:
         print("PASS: classify: %s" % name)
     else:
@@ -371,6 +389,82 @@ try:
             bad += 1
             print("FAIL: says_waiting: %s" % name)
             print("      expected %r got %r" % (want, got))
+finally:
+    plugin.HOME = real_home
+
+# scheduled_count reads pending wakeups and cron jobs from the transcript
+import datetime
+SNOW = 1_800_000_000.0
+def iso(t):
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+def tool_use(name, inp, tid, t, kind="assistant"):
+    return {"type": kind, "timestamp": iso(t),
+            "message": {"content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}}
+def create(job, tid, t, fire_in, recurring=False):
+    return [tool_use("CronCreate", {"cron": "* * * * *", "prompt": "x", "recurring": recurring}, tid, t),
+            {"type": "user", "timestamp": iso(t),
+             "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": "Scheduled task " + job}]},
+             "toolUseResult": {"id": job, "humanSchedule": "* * * * *", "recurring": recurring,
+                               "durable": False, "nextFireAt": int((t + fire_in) * 1000)}}]
+def delete(job, tid, t):
+    return [tool_use("CronDelete", {"id": job}, tid, t),
+            {"type": "user", "timestamp": iso(t),
+             "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content": "Deleted " + job}]},
+             "toolUseResult": {"id": job}}]
+def wake(delay, t, stop=False):
+    return [tool_use("ScheduleWakeup", {"stop": True} if stop else
+                     {"delaySeconds": delay, "prompt": "x", "reason": "y"}, "w%d" % t, t)]
+def blob(lines):
+    return [{"type": "api-request-blob", "timestamp": iso(SNOW), "body": json.dumps(l)} for l in lines]
+real_home = plugin.HOME
+plugin.HOME = home
+try:
+    one_shot = create("aaaa1111", "t1", SNOW - 600, 1800)
+    for name, lines, want in [
+        ("pending one-shot cron",            one_shot,                                                   1),
+        ("fired one-shot cron",              create("aaaa1111", "t1", SNOW - 3600, 3600 - 300),          0),
+        ("one-shot cron inside fire slack",  create("aaaa1111", "t1", SNOW - 3600, 3600 - 60),           1),
+        ("pending recurring cron",           create("bbbb2222", "t2", SNOW - 3600, 60, recurring=True),  1),
+        ("recurring cron deleted",           create("bbbb2222", "t2", SNOW - 3600, 60, recurring=True)
+                                             + delete("bbbb2222", "t3", SNOW - 60),                      0),
+        ("one-shot cron deleted",            one_shot + delete("aaaa1111", "t3", SNOW - 60),             0),
+        ("other job deleted, this one stays", one_shot + delete("cccc3333", "t3", SNOW - 60),            1),
+        ("recurring cron older than 7 days", create("bbbb2222", "t2", SNOW - 8 * 86400, 60, recurring=True), 0),
+        ("two cron jobs",                    one_shot + create("bbbb2222", "t2", SNOW - 60, 60, recurring=True), 2),
+        ("pending ScheduleWakeup",           wake(1200, SNOW - 600),                                     1),
+        ("expired ScheduleWakeup",           wake(1200, SNOW - 1500),                                    0),
+        ("short delay clamps up to 60 s",    wake(5, SNOW - 100),                                        1),
+        ("long delay clamps down to 1 h",    wake(86400, SNOW - 4000),                                   0),
+        ("last ScheduleWakeup is stop",      wake(1200, SNOW - 600) + wake(0, SNOW - 300, stop=True),    0),
+        ("last ScheduleWakeup replaces old", wake(1200, SNOW - 3000) + wake(1200, SNOW - 300),           1),
+        ("wakeup and cron together",         wake(1200, SNOW - 600) + one_shot,                          2),
+        ("api-request-blob ignored",         one_shot + blob(one_shot + wake(1200, SNOW - 600)),         1),
+        ("no scheduling at all",             [entry("hello")],                                           0),
+    ]:
+        sid = "c-" + name.replace(" ", "-")
+        with open(os.path.join(home, ".claude", "projects", "-p", sid + ".jsonl"), "w") as fh:
+            fh.write("not json but mentions CronCreate\n")
+            for l in lines:
+                fh.write(json.dumps(l, ensure_ascii=False, separators=(",", ":")) + "\n")
+            fh.write("{\"type\":\"assistant\",\"name\":\"ScheduleWakeup\"\n")
+        got = plugin.scheduled_count(sid, now=SNOW)
+        if got == want:
+            print("PASS: scheduled_count: %s" % name)
+        else:
+            bad += 1
+            print("FAIL: scheduled_count: %s" % name)
+            print("      expected %r got %r" % (want, got))
+    # a line that straddles a chunk boundary is still read whole
+    plugin.TRANSCRIPT_CHUNK = 64
+    try:
+        got = plugin.scheduled_count("c-pending-one-shot-cron", now=SNOW)
+    finally:
+        plugin.TRANSCRIPT_CHUNK = 1024 * 1024
+    print(("PASS" if got == 1 else "FAIL") + ": scheduled_count: lines spanning chunk boundaries")
+    bad += 0 if got == 1 else 1
+    got = plugin.scheduled_count("no-such-session", now=SNOW)
+    print(("PASS" if got == 0 else "FAIL") + ": scheduled_count: no transcript")
+    bad += 0 if got == 0 else 1
 finally:
     plugin.HOME = real_home
 

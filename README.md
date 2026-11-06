@@ -7,8 +7,9 @@ Mac. It shows what each session is doing right now, and clicking one
 focuses its terminal tab.
 
 ```
-🔴1 🟢2 ⏳3                        <- menu bar
+🔴1 🟡1 🟢2 ⏳3                   <- menu bar
 ├── 🔴 my-api             needs your answer  3m
+├── 🟡 deploy-fix         working, silent 1h05m  1h05m
 ├── 🟢 claude-sessions-menubar  finished  2m
 ├── 🟢 website            finished  14m
 ├── ⏳ Refactor auth middleware  working · 2 subagents  48s
@@ -16,36 +17,46 @@ focuses its terminal tab.
 └── ⏳ release            waiting on 1 subagent, 1 background task  9m
 ```
 
-## The four marks
+## The five marks
 
 The marks describe what *you* have to do, loudest first. The menu bar shows one count per mark present, in this order, and the dropdown is one flat list in the same order, oldest first within a mark.
 
 | Mark | Text | Meaning |
 |---|---|---|
 | 🔴 | needs your answer | **Act now.** A permission prompt, a question dialog or a plan approval is blocking the session. |
-| 🟢 | finished, or said it's waiting, nothing is running | **Your turn.** The main loop finished, no subagent is live and no background task is running. When its last reply ended with a wait line, the text says so, because nothing will wake that session but you. |
-| ⏳ | working, or waiting on … | **Nothing to do yet.** Either the main loop is working (with live subagents the text reads `working · N subagents`), or the main loop finished but subagents or background tasks are still running (`waiting on 2 subagents`, `waiting on 1 background task` or `waiting on 1 subagent, 2 background tasks`). Both share one mark and one count because neither asks anything of you; the row text says which it is. |
+| 🟡 | said it's waiting, nothing is running; or `…, silent 1h05m` | **Go look.** The session may be stuck. Either its last reply ended with a wait line while nothing is alive, or it has had no hook event for an hour with no shell command running. See "Stuck sessions". |
+| 🟢 | finished | **Your turn.** The main loop finished, no subagent is live, no background task is running and no wakeup is scheduled. |
+| ⏳ | working, or waiting on … | **Nothing to do yet.** Either the main loop is working (with live subagents the text reads `working · N subagents`), or the main loop finished but subagents, background tasks or scheduled wakeups are still pending (`waiting on 2 subagents`, `waiting on 1 background task`, `waiting on 1 scheduled wakeup` or `waiting on 1 subagent, 2 background tasks`, in that order). Both share one mark and one count because neither asks anything of you; the row text says which it is. |
 | ⚪ | new, nothing asked yet | The session opened and has not received a prompt. |
 
-With no sessions the title reads `Claude: none`. The dropdown ends with a grey legend of the four marks.
+With no sessions the title reads `Claude: none`. The dropdown ends with a grey legend of the five marks.
 
-The plugin derives the mark from the record the hook writes (`main`, `subagents`) plus a count of background tasks, in one pure function (`classify` in the plugin). 🟢 means finished, not healthy: green is the cue to go and look.
+The plugin derives the mark from the record the hook writes (`main`, `subagents`, `updated_at`) plus a count of background tasks and a count of scheduled wakeups, in one pure function (`classify` in the plugin). 🟢 means the session finished its turn and nothing is pending, so the title counts it as ready for you; 🟡 is the one to inspect.
 
 ### Question dialogs
 
 `AskUserQuestion` and `ExitPlanMode` open a dialog that fires no `Notification`, so a session blocked on one used to show as working. The hook now treats a main-context `PreToolUse` for either tool as `needs_input` and records the message `Claude asked you a question` or `Claude is waiting for you to approve a plan`. The next main-context `PreToolUse`, `UserPromptSubmit` or `Stop` moves the session on and clears the message. A subagent's tool calls do not clear a question the main loop is still asking.
 
-### Waiting on nothing
+### Stuck sessions
 
-A session can end its turn to wait on work that then never reports back: a subagent that ended its own turn on a Monitor, say, and was not resumed when the Monitor fired. Nothing is left running, so the row is 🟢, but `finished` would hide that the session believes it is still waiting. When a 🟢 session's last main-loop reply ends with one of `WAIT_MARKERS` in the plugin (`🔄 Waiting` by default; edit it to match the wait line your instructions use), the row reads `said it's waiting, nothing is running`. The plugin reads only the tail of that session's transcript, and only for 🟢 rows. A pending `ScheduleWakeup` or cron job has no process to count, so a session waiting on one shows this text too.
+A session is 🟡 for one of two reasons, and the title counts it apart from 🟢 and ⏳ so that neither count hides it.
 
-### Silent sessions
+* **It said it is waiting, but nothing is alive.** A session can end its turn to wait on work that then never reports back: a subagent that ended its own turn on a Monitor, say, and was not resumed when the Monitor fired. When a finished session's last main-loop reply ends with one of `WAIT_MARKERS` in the plugin (`🔄 Waiting` by default; edit it to match the wait line your instructions use) while no subagent, background task or scheduled wakeup is pending, the row reads `said it's waiting, nothing is running`. The plugin reads only the tail of that session's transcript, and only for sessions that would otherwise be 🟢.
+* **It has been silent for an hour.** A working session, or a finished one that is waiting only on subagents, with no hook event of any kind for `SILENT_AFTER` (one hour) reads `working, silent 1h05m` or `waiting on 1 subagent, silent 1h05m`. The time comes from the record's `updated_at`, which every hook event moves, a subagent's included, so a session that is really working keeps resetting it.
 
-A ⏳ session with no hook event of any kind for an hour may be hung, so its row ends with 🟡. The time comes from the record's `updated_at`, which every hook event moves, a subagent's included, so a session that is really working keeps resetting it. A long background task fires no events, so it can earn a 🟡 while still running; the mark says to look, not that the session is dead. 🔴 and 🟢 rows never get one, since they are already waiting on you. The threshold is `SILENT_AFTER` in the plugin.
+A running shell command exempts a session from the silence rule. A long foreground command or a background task fires no hook events while it runs, so silence next to a live shell child proves nothing; the plugin applies the rule only when the `claude` process holds no Bash-tool child. For the same reason a session waiting on a background task or a scheduled wakeup is never marked for silence, since the task or the schedule explains it. A 🟡 row says to look, not that the session is dead.
+
+### Scheduled wakeups
+
+`ScheduleWakeup` and `CronCreate` jobs live only in the session's memory: they leave no process for the plugin to count and no hook event. A session that ended its turn after scheduling one would otherwise read 🟢 or 🟡 although it will wake itself, so the plugin reads the schedules from the session's main transcript (`scheduled_count`). It reads the file in 1 MB chunks and parses only the lines that mention a scheduling tool, and it does this only for sessions that would otherwise read 🟢. Pending jobs show as ⏳ `waiting on 1 scheduled wakeup`, and the count is the sum of these rules:
+
+* A cron job created by `CronCreate` and not deleted by a later `CronDelete` counts while it is pending. A recurring job is pending for 7 days after creation, when Claude Code expires it. A one-shot job is pending until two minutes after its `nextFireAt`, since it fires up to 90 seconds early or late and then deletes itself.
+* Only the last `ScheduleWakeup` call counts, because a new one replaces the loop's wakeup. A call with `stop: true` counts as none. Otherwise it is pending until its timestamp plus its delay, clamped to between 60 seconds and one hour, is two minutes past.
+* Any failure reading the transcript counts as none.
 
 ### Background tasks
 
-Claude Code's Bash tool runs each command as a direct child of the `claude` process, with a command line that contains `/.claude/shell-snapshots/snapshot-`. A `run_in_background` task or a Monitor watcher keeps such a child alive after the turn ends. On each refresh the plugin makes one `/bin/ps -Ao ppid=,args=` call and counts those children per `claude` pid. The count changes the mark only when `main` is `done` or `idle`, because a foreground Bash call is normal while the main loop works. If the `ps` call fails, the count is 0.
+Claude Code's Bash tool runs each command as a direct child of the `claude` process, with a command line that contains `/.claude/shell-snapshots/snapshot-`. A `run_in_background` task or a Monitor watcher keeps such a child alive after the turn ends. On each refresh the plugin makes one `/bin/ps -Ao ppid=,args=` call and counts those children per `claude` pid. The count changes the mark only when `main` is `done` or `idle`, because a foreground Bash call is normal while the main loop works; while the main loop works, a nonzero count only exempts the session from the silence rule. If the `ps` call fails, the count is 0.
 
 ## Install
 
@@ -176,7 +187,7 @@ also emits `SubagentStop` for its internal helper agents, with an empty
 carrying an `agent_id` self-heals a missing entry and refreshes its `seen`
 timestamp; an entry silent for an hour is pruned as a missed stop.
 
-Stored `state` = `needs_input` if `main` is `needs_input` → else `subagents` if any agent is live → else `main`. The plugin does not draw `state` directly: it derives the mark from `main`, the subagent count and the background-task count (see "The four marks"). `Stop` fires the instant the orchestrator ends its turn, even with background agents still going, which is why 🟢 requires both a finished main loop and nothing running underneath.
+Stored `state` = `needs_input` if `main` is `needs_input` → else `subagents` if any agent is live → else `main`. The plugin does not draw `state` directly: it derives the mark from `main`, the subagent count and the background-task count (see "The five marks"). `Stop` fires the instant the orchestrator ends its turn, even with background agents still going, which is why 🟢 requires both a finished main loop and nothing running or scheduled underneath.
 
 Two details worth knowing:
 
@@ -253,7 +264,7 @@ A self-contained regression test — no installed hooks or real Claude Code
 session required. It points `CLAUDE_AGENT_STATUS_DIR` at a temp directory,
 pipes synthetic hook payloads through `./hook.sh`, and asserts the resulting
 record with `jq` after each step (main-loop transitions, subagent add/remove,
-self-heal, notifications, question dialogs, and a broken `hook-impl.sh` still exiting 0). It also imports the plugin and checks `classify` for every mark. Run it
+self-heal, notifications, question dialogs, and a broken `hook-impl.sh` still exiting 0). It also imports the plugin and checks `classify` for every mark and `scheduled_count` against synthetic transcripts. Run it
 after any change to `hook.sh`, `hook-impl.sh` or the plugin.
 
 ## Files

@@ -10,6 +10,7 @@
 # Reads the records written by ~/.claude/claude-sessions-menubar/hook.sh.
 # Run with `--clear` to prune dead/corrupt records without printing a menu.
 
+import datetime
 import glob
 import json
 import os
@@ -33,17 +34,19 @@ if not os.path.isfile(FOCUS):
 # menu-bar title order and the dropdown order.
 # Working and waiting share one mark: either way the session needs nothing
 # from you yet. The row text still says which it is.
-MARK_ORDER = ["needs_you", "done", "busy", "new"]
+MARK_ORDER = ["needs_you", "stuck", "done", "busy", "new"]
 MARK_ICON = {
     "needs_you": "🔴",
+    "stuck": "🟡",
     "done": "🟢",
     "busy": "⏳",
     "new": "⚪",
 }
 LEGEND = [
     ("needs_you", "act now — a prompt or question is blocking it"),
-    ("done", "your turn — it finished, or is waiting on nothing that is running"),
-    ("busy", "busy — working, or waiting on its own subagents or background tasks"),
+    ("stuck", "go look — it may be stuck: waiting on nothing that is running, or silent for an hour"),
+    ("done", "your turn — it finished"),
+    ("busy", "nothing to do yet — working, or waiting on its subagents, background tasks or a scheduled wakeup"),
     ("new", "opened, nothing asked yet"),
 ]
 
@@ -53,16 +56,26 @@ SHELL_SNAPSHOT = "/.claude/shell-snapshots/snapshot-"
 
 QUIET_AFTER = 15 * 60  # seconds of silence after which a subagent with no shell children counts as gone
 
-# A busy session with no hook event of any kind for this long may be hung, so
-# its row ends with SILENT_MARK.
+# A busy session with no hook event of any kind for this long, and no shell
+# child alive to explain the silence, may be hung, so it is marked stuck.
 SILENT_AFTER = 60 * 60
-SILENT_MARK = "🟡"
 
 # Reply endings that mean "this turn ended to wait". A finished session whose
-# last main-loop reply ends with one, while no subagent or background task is
-# alive, is waiting on something that will never wake it, so its row says so.
+# last main-loop reply ends with one, while no subagent, background task or
+# scheduled wakeup is alive, is waiting on something that will never wake it,
+# so it is marked stuck.
 # Matches the wait line this machine's instructions require; edit for yours.
 WAIT_MARKERS = ("🔄 Waiting",)
+
+# Scheduled wakeups (ScheduleWakeup, CronCreate) live only in the session's
+# memory, so scheduled_count reads them from the transcript.
+CRON_RECURRING_TTL = 7 * 24 * 3600   # recurring cron jobs expire after 7 days
+FIRE_SLACK = 120                      # a job fires up to 90 s early or late
+WAKEUP_MIN, WAKEUP_MAX = 60, 3600     # ScheduleWakeup clamps its delay to this
+TRANSCRIPT_CHUNK = 1024 * 1024
+# A transcript line is parsed only if it contains one of these. The CronCreate
+# result line carries no tool name, only "nextFireAt".
+SCHEDULE_MARKERS = (b'"ScheduleWakeup"', b'"Cron', b'"nextFireAt"')
 
 
 def live_pids():
@@ -147,32 +160,55 @@ def _live_subagents(rec, bg, now):
     return live
 
 
-def classify(rec, bg_count=0, now=None, says_waiting=False):
+def _last_event(rec):
+    """Epoch seconds of the record's last hook event, or None. `updated_at`
+    moves on every event, subagent events included, so a session that is
+    really working keeps resetting it."""
+    try:
+        return float(rec.get("updated_at") or rec.get("state_since"))
+    except (TypeError, ValueError):
+        return None
+
+
+def classify(rec, bg_count=0, now=None, says_waiting=False, scheduled=0):
     """Decide the mark for one session record.
 
     Returns (mark_key, icon, text). `bg_count` is the number of background
-    tasks the session's `claude` process holds; it changes the mark only when
-    the main loop is done or idle, because a foreground Bash call is normal
-    while the main loop works. `says_waiting` is True when the main loop's
-    last reply ends with a WAIT_MARKERS line; with nothing live it changes
-    only the text of a 🟢 row, since nothing will wake the session but you."""
+    tasks the session's `claude` process holds; `scheduled` is the number of
+    pending scheduled wakeups. Both change the mark only when the main loop is
+    done or idle, because a foreground Bash call is normal while the main loop
+    works. `says_waiting` is True when the main loop's last reply ends with a
+    WAIT_MARKERS line; with nothing live the session is stuck, since nothing
+    will wake it but you.
+
+    A session that is busy with no shell child alive and no hook event for
+    SILENT_AFTER is stuck too. A background task or a schedule explains
+    silence, so a session waiting on either is never stuck for it."""
     state = rec.get("state")
     main = rec.get("main") or state
     bg = _count(bg_count)
-    n_sub = _live_subagents(rec, bg, time.time() if now is None else now)
+    sched = _count(scheduled)
+    now = time.time() if now is None else now
+    n_sub = _live_subagents(rec, bg, now)
+    last = _last_event(rec)
+    silent = last is not None and not bg and now - last >= SILENT_AFTER
 
     if main == "needs_input" or state == "needs_input":
         key, text = "needs_you", "needs your answer"
     elif main in ("done", "idle"):
-        if n_sub or bg:
-            waits = []
-            if n_sub:
-                waits.append(_plural(n_sub, "subagent"))
-            if bg:
-                waits.append(_plural(bg, "background task"))
+        waits = []
+        if n_sub:
+            waits.append(_plural(n_sub, "subagent"))
+        if bg:
+            waits.append(_plural(bg, "background task"))
+        if sched:
+            waits.append(_plural(sched, "scheduled wakeup"))
+        if waits:
             key, text = "busy", "waiting on " + ", ".join(waits)
+            if silent and not sched:
+                key, text = "stuck", text + ", silent " + elapsed(last, now)
         elif main == "done" and says_waiting:
-            key, text = "done", "said it's waiting, nothing is running"
+            key, text = "stuck", "said it's waiting, nothing is running"
         elif main == "done":
             key, text = "done", "finished"
         else:
@@ -180,22 +216,9 @@ def classify(rec, bg_count=0, now=None, says_waiting=False):
     else:
         key = "busy"
         text = "working · %s" % _plural(n_sub, "subagent") if n_sub else "working"
+        if silent:
+            key, text = "stuck", text + ", silent " + elapsed(last, now)
     return key, MARK_ICON[key], text
-
-
-def is_silent(rec, mark, now=None):
-    """True when a busy (⏳) session has had no hook event for SILENT_AFTER.
-
-    Red and green already wait on you, and a new session has nothing to do.
-    `updated_at` moves on every event, subagent events included, so a
-    session that is really working keeps resetting it."""
-    if mark != "busy":
-        return False
-    try:
-        last = float(rec.get("updated_at") or rec.get("state_since"))
-    except (TypeError, ValueError):
-        return False
-    return (time.time() if now is None else now) - last >= SILENT_AFTER
 
 
 def is_alive(pid, procs):
@@ -250,9 +273,9 @@ def _unlink(path):
         pass
 
 
-def elapsed(since):
+def elapsed(since, now=None):
     try:
-        secs = int(time.time() - float(since))
+        secs = int((time.time() if now is None else now) - float(since))
     except (TypeError, ValueError):
         return "?"
     if secs < 0:
@@ -409,6 +432,115 @@ def says_waiting(session_id):
     return bool(text) and text.rstrip().endswith(WAIT_MARKERS)
 
 
+def _chunked_lines(fh):
+    """Lines of a binary file, read TRANSCRIPT_CHUNK bytes at a time."""
+    rest = b""
+    while True:
+        chunk = fh.read(TRANSCRIPT_CHUNK)
+        if not chunk:
+            break
+        parts = (rest + chunk).split(b"\n")
+        rest = parts.pop()
+        for part in parts:
+            yield part
+    if rest:
+        yield rest
+
+
+def _iso_epoch(stamp):
+    """Epoch seconds of an ISO-8601 timestamp ending in "Z", or None."""
+    try:
+        return datetime.datetime.fromisoformat(
+            str(stamp).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _blocks(rec, kind):
+    content = (rec.get("message") or {}).get("content")
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict) and b.get("type") == kind]
+
+
+def scheduled_count(session_id, now=None):
+    """Number of scheduled wakeups still pending for the session, read from its
+    main transcript; any failure is 0.
+
+    Cron jobs: one created by CronCreate and not deleted by CronDelete is
+    pending while a recurring job is under CRON_RECURRING_TTL old, or while a
+    one-shot job's `nextFireAt` is not more than FIRE_SLACK seconds past.
+    ScheduleWakeup: only the last call counts, since a new one replaces the
+    loop's wakeup; `stop: true` cancels it, otherwise it is pending until its
+    clamped delay has run out."""
+    now = time.time() if now is None else now
+    path = _transcript_path(session_id)
+    if not path:
+        return 0
+    try:
+        create_ids, delete_ids = set(), set()
+        jobs = {}                  # cron id -> (recurring, created, next_fire)
+        deleted = set()
+        wake = None                # (input, timestamp) of the last ScheduleWakeup
+        with open(path, "rb") as fh:
+            for line in _chunked_lines(fh):
+                if not any(m in line for m in SCHEDULE_MARKERS):
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                kind = rec.get("type")
+                stamp = _iso_epoch(rec.get("timestamp"))
+                if kind == "assistant":
+                    for block in _blocks(rec, "tool_use"):
+                        inp = block.get("input")
+                        inp = inp if isinstance(inp, dict) else {}
+                        name = block.get("name")
+                        if name == "CronCreate":
+                            create_ids.add(block.get("id"))
+                        elif name == "CronDelete":
+                            delete_ids.add(block.get("id"))
+                            if inp.get("id"):
+                                deleted.add(inp["id"])
+                        elif name == "ScheduleWakeup":
+                            wake = (inp, stamp)
+                elif kind == "user":
+                    res = rec.get("toolUseResult")
+                    if not isinstance(res, dict) or not res.get("id"):
+                        continue
+                    for block in _blocks(rec, "tool_result"):
+                        tid = block.get("tool_use_id")
+                        if tid in delete_ids:
+                            deleted.add(res["id"])
+                        elif tid in create_ids and stamp is not None:
+                            jobs[res["id"]] = (bool(res.get("recurring")), stamp,
+                                               res.get("nextFireAt"))
+        pending = 0
+        for job_id, (recurring, created, next_fire) in jobs.items():
+            if job_id in deleted:
+                continue
+            if recurring:
+                pending += now - created < CRON_RECURRING_TTL
+            else:
+                try:
+                    pending += float(next_fire) / 1000 > now - FIRE_SLACK
+                except (TypeError, ValueError):
+                    pass
+        if wake is not None and not wake[0].get("stop") and wake[1] is not None:
+            try:
+                delay = float(wake[0].get("delaySeconds"))
+            except (TypeError, ValueError):
+                delay = WAKEUP_MIN
+            delay = min(max(delay, WAKEUP_MIN), WAKEUP_MAX)
+            pending += wake[1] + delay > now - FIRE_SLACK
+        return int(pending)
+    except Exception:
+        return 0
+
+
 def truncate(text, limit=36):
     text = str(text)
     if len(text) <= limit:
@@ -452,8 +584,10 @@ def main():
         n_bg = bg.get(pid, 0)
         verdict = classify(rec, n_bg)
         # only a 🟢 row can change, so only its transcript is read
-        if verdict[0] == "done" and says_waiting(rec.get("session_id")):
-            verdict = classify(rec, n_bg, says_waiting=True)
+        if verdict[0] == "done":
+            sid = rec.get("session_id")
+            verdict = classify(rec, n_bg, says_waiting=says_waiting(sid),
+                               scheduled=scheduled_count(sid))
         rows.append((rec, n_bg) + verdict)
 
     # ---- menu bar title ---------------------------------------------------
@@ -472,13 +606,11 @@ def main():
         print("No Claude Code sessions running | color=#888888")
     else:
         rows.sort(key=lambda r: (MARK_ORDER.index(r[2]), _since_key(r[0].get("state_since"))))
-        for s, _n_bg, mark, icon, text in rows:
+        for s, _n_bg, _mark, icon, text in rows:
             label = clean(session_label(s))
             tty = str(s.get("tty") or "")
             line = "%s %s  %s  %s" % (icon, label, text, elapsed(s.get("state_since")))
             params = ["symbolize=false"]
-            if is_silent(s, mark):
-                line += "  " + SILENT_MARK
             if tty:
                 term_prog = clean(s.get("terminal") or "Apple_Terminal")
                 params += ["bash=%s" % FOCUS, "param1=%s" % tty,
