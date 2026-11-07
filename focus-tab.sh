@@ -39,7 +39,17 @@ notify_not_found() {
 notify_failure() {
   local rc="$1" out="$2"
   echo "osascript failed (rc=$rc): $out" >&2
-  osascript -e "display notification \"Could not talk to the terminal app. Grant Automation permission in System Settings > Privacy & Security > Automation.\" with title \"Claude Sessions\"" >/dev/null 2>&1
+  local msg
+  case "$out" in
+    # -1743: the user has not allowed this app to control the terminal app
+    *"-1743"*|*"Not authorized to send Apple events"*)
+      msg="Not allowed to control the terminal app. Grant Automation permission in System Settings > Privacy & Security > Automation." ;;
+    *)
+      # Anything else is a script error: show it rather than guess.
+      msg="Could not focus the tab: ${out##*execution error: }"
+      msg="${msg//\"/\'}" ;;
+  esac
+  osascript -e "display notification \"$msg\" with title \"Claude Sessions\"" >/dev/null 2>&1
 }
 
 case "$term" in
@@ -54,15 +64,20 @@ on run
     -- front window back on top (the flicker).
     set wid to missing value
     repeat with w in windows
-      repeat with t in tabs of w
-        try
-          if (tty of t) is target then
-            set wid to id of w
-            set selected of t to true
-            exit repeat
-          end if
-        end try
-      end repeat
+      -- Terminal can list a window with no id and no tabs (a closing or
+      -- ghost window); "tabs of" it raises -1728, which outside a try
+      -- aborts the whole search. Skip such windows.
+      try
+        repeat with t in tabs of w
+          try
+            if (tty of t) is target then
+              set wid to id of w
+              set selected of t to true
+              exit repeat
+            end if
+          end try
+        end repeat
+      end try
       if wid is not missing value then exit repeat
     end repeat
     if wid is missing value then return "notfound"
